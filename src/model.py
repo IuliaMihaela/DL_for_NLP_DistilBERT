@@ -1,12 +1,17 @@
 import torch
 import torch.nn as nn
-from transformers import BertModel, DistilBertConfig, DistilBertForMaskedLM
+from transformers import BertModel, DistilBertConfig, DistilBertForMaskedLM, BertForMaskedLM
 
 class DistilBertStudent(nn.Module):
     def __init__(self, teacher_model_name="bert-base-uncased"):
         super().__init__()
         # Load teacher configuration to match the hidden size of 768
-        self.teacher = BertModel.from_pretrained(teacher_model_name)
+        #self.teacher = BertModel.from_pretrained(teacher_model_name)
+        self.teacher = BertForMaskedLM.from_pretrained(teacher_model_name)
+
+        self.teacher.eval()
+        for p in self.teacher.parameters():
+            p.requires_grad = False
         
         # Create Student config with 6 instead of 12 layers
         self.config = DistilBertConfig(
@@ -24,15 +29,16 @@ class DistilBertStudent(nn.Module):
         """
         Implements the 'one layer out of two' initialization
         """
+        teacher_bert = self.teacher.bert
         print("Start initialization...")
         
         # Copy Embeddings
         self.student.distilbert.embeddings.word_embeddings.weight.data = \
-            self.teacher.embeddings.word_embeddings.weight.data.clone()
+            teacher_bert.embeddings.word_embeddings.weight.data.clone()
         self.student.distilbert.embeddings.position_embeddings.weight.data = \
-            self.teacher.embeddings.position_embeddings.weight.data.clone()
+            teacher_bert.embeddings.position_embeddings.weight.data.clone()
         self.student.distilbert.embeddings.LayerNorm.load_state_dict(
-            self.teacher.embeddings.LayerNorm.state_dict()
+            teacher_bert.embeddings.LayerNorm.state_dict()
         )
 
         # Copy Transformer Layers
@@ -41,7 +47,7 @@ class DistilBertStudent(nn.Module):
             
             # Access the specific layer objects
             std_layer = self.student.distilbert.transformer.layer[i]
-            tch_layer = self.teacher.encoder.layer[teacher_layer_idx]
+            tch_layer = teacher_bert.encoder.layer[teacher_layer_idx]
             
             # Map Attention Weights (Query, Key, Value)
             std_layer.attention.q_lin.weight.data = tch_layer.attention.self.query.weight.data.clone()
@@ -74,10 +80,38 @@ class DistilBertStudent(nn.Module):
 
         print(f"Successfully initialized student with layers: {[i*2 for i in range(6)]}")
 
-    def forward(self, input_ids, attention_mask=None):
-        outputs = self.student(
-            input_ids, 
-            attention_mask=attention_mask, 
-            output_hidden_states=True
+    @torch.no_grad()
+    def forward_teacher(self, input_ids, attention_mask=None):
+        """
+        Teacher forward pass (frozen, no grad).
+        Returns teacher logits and hidden states.
+        """
+        self.teacher.eval()
+        out = self.teacher(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True
         )
-        return outputs.logits, outputs.hidden_states
+        return out.logits, out.hidden_states
+
+    
+        #def forward(self, input_ids, attention_mask=None):
+        #    outputs = self.student(
+        #        input_ids, 
+        #        attention_mask=attention_mask, 
+        #        output_hidden_states=True
+        #    )
+        #    return outputs.logits, outputs.hidden_states
+
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        #Student forward pass. If labels are provided, returns MLM loss too.
+        outputs = self.student(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+            output_hidden_states=True,
+            return_dict=True
+        )
+        # outputs.loss exists when labels is not None
+        return outputs.loss, outputs.logits, outputs.hidden_states
