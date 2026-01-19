@@ -160,15 +160,14 @@ def train(
 
 
 if __name__ == "__main__":
-    # Quick sanity run: keep it small so you see it works
     train(
-        epochs=1,
+        epochs=3,
         batch_size=8,
-        subset_size=2000,
+        subset_size=10000,
         lr=5e-5,
         temperature=2.0,
         alpha_mlm=1.0,
         beta_distill=1.0,
         gamma_cos=1.0,
-        max_steps=200
+        max_steps=2000
     )
