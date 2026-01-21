@@ -72,9 +72,9 @@ We additionally validated real edge deployment using:
 | Combined (Prune+INT8) | 154.77 | 23,855,616 | **9.28** | 135.05 | **0.00** |
 
 
-### Quality (Loss-based Evaluation) (Lower is better ↓)
+### Quality (Loss-based Evaluation) (Lower is better)
 
-| Model | MLM Eval Loss ↓ | Distill Eval Loss ↓ | Cosine Eval Loss ↓ |
+| Model | MLM Eval Loss | Distill Eval Loss | Cosine Eval Loss |
 |------|-----------------:|---------------------:|-------------------:|
 | Baseline | 6.6854 | 7.6096 | 0.2679 |
 | Quantized | 6.8083 | 7.8827 | 0.2818 |
