@@ -12,6 +12,12 @@ class DistillationDataset:
         
         # Limit size for quick testing
         self.dataset = self.dataset.select(range(min(subset_size, len(self.dataset))))
+        
+        if mode == "paper":
+            if data_dir is None:
+                raise ValueError("mode='paper' requires --data_dir with prepared corpus files")
+        
+
 
     def preprocess_function(self, examples):
         # Remove empty lines and tokenize

@@ -22,7 +22,8 @@ def set_all_seeds(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def masked_kl_div(student_logits, teacher_logits, labels, temperature=2.0):
@@ -47,7 +48,7 @@ def masked_kl_div(student_logits, teacher_logits, labels, temperature=2.0):
 
 def cosine_hidden_loss_last(student_hidden_states, teacher_hidden_states, attention_mask):
     """
-    Cosine alignment on last hidden states only (clean + defensible).
+    Cosine alignment on last hidden states only.
     """
     attn = attention_mask.float()  # [B, L]
     denom = attn.sum().clamp(min=1.0)
@@ -72,7 +73,7 @@ class TrainCfg:
     eps: float = 1e-6
 
     warmup_ratio: float = 0.06
-    max_steps: int | None = None
+    max_steps: int | None = None  # optimizer steps
     grad_accum_steps: int = 1
     max_grad_norm: float = 1.0
 
@@ -84,9 +85,13 @@ class TrainCfg:
     fp16: bool = True
     seed: int = 42
 
-    save_dir: str = "checkpoints"
-    save_every_steps: int = 500  # optimizer steps (after accumulation)
-    log_every_steps: int = 50     # optimizer steps
+    save_dir: str = "checkpoints"       # for intermediate step_* checkpoints
+    save_every_steps: int = 500         # optimizer steps
+    log_every_steps: int = 50           # optimizer steps
+
+    dataset_mode: str = "small"         # "small" | "paper"
+    data_dir: str | None = None
+    output_dir: str = "checkpoints/final"  # final model dir
 
 
 def train(cfg: TrainCfg):
@@ -96,9 +101,14 @@ def train(cfg: TrainCfg):
     set_all_seeds(cfg.seed)
 
     # ---------------------------
-    # Data (your current small dataset)
+    # Data
     # ---------------------------
-    ds = DistillationDataset(model_name=cfg.teacher_model_name, subset_size=cfg.subset_size)
+    ds = DistillationDataset(
+        model_name=cfg.teacher_model_name,
+        subset_size=cfg.subset_size,
+        mode=cfg.dataset_mode,
+        data_dir=cfg.data_dir
+    )
     loader = ds.get_data_loader(batch_size=cfg.batch_size)
 
     # ---------------------------
@@ -108,12 +118,11 @@ def train(cfg: TrainCfg):
     model.initialize_from_teacher()
     model.to(device)
 
-    # Make modes explicit (teacher frozen)
     model.teacher.eval()
     model.student.train()
 
     # ---------------------------
-    # Optimizer + scheduler (paper-like)
+    # Optimizer
     # ---------------------------
     optimizer = AdamW(
         model.student.parameters(),
@@ -123,9 +132,17 @@ def train(cfg: TrainCfg):
         weight_decay=cfg.weight_decay,
     )
 
-    # total optimizer steps (not raw batches)
+    # ---------------------------
+    # Compute total optimizer steps correctly
+    # ---------------------------
+    # optimizer step happens every grad_accum_steps batches
     steps_per_epoch = math.ceil(len(loader) / cfg.grad_accum_steps)
-    total_optim_steps = steps_per_epoch * cfg.epochs if cfg.max_steps is None else cfg.max_steps
+    total_optim_steps = steps_per_epoch * cfg.epochs
+
+    # If user sets max_steps, cap training
+    if cfg.max_steps is not None:
+        total_optim_steps = min(total_optim_steps, cfg.max_steps)
+
     warmup_steps = int(cfg.warmup_ratio * total_optim_steps)
 
     scheduler = get_linear_schedule_with_warmup(
@@ -134,19 +151,23 @@ def train(cfg: TrainCfg):
         num_training_steps=total_optim_steps
     )
 
+    # AMP scaler (only meaningful on cuda)
     scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)
 
     os.makedirs(cfg.save_dir, exist_ok=True)
+    os.makedirs(cfg.output_dir, exist_ok=True)
 
     # ---------------------------
     # Train loop
     # ---------------------------
-    raw_step = 0               # counts batches
-    optim_step = 0             # counts optimizer updates
+    raw_step = 0     # batch counter
+    optim_step = 0   # optimizer update counter
+
     running = {"mlm": 0.0, "distill": 0.0, "cos": 0.0, "total": 0.0}
 
     optimizer.zero_grad(set_to_none=True)
 
+    stop = False
     for epoch in range(cfg.epochs):
         for batch in loader:
             raw_step += 1
@@ -155,7 +176,7 @@ def train(cfg: TrainCfg):
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
 
-            # Teacher forward (no grad, eval)
+            # Teacher forward (no grad)
             teacher_logits, teacher_hid = model.forward_teacher(
                 input_ids=input_ids,
                 attention_mask=attention_mask
@@ -194,9 +215,8 @@ def train(cfg: TrainCfg):
             # backward
             scaler.scale(loss_scaled).backward()
 
-            # Only step optimizer every grad_accum_steps batches
-            if raw_step % cfg.grad_accum_steps == 0:
-                # unscale before clipping
+            # if we reached accumulation boundary, do optimizer step
+            if (raw_step % cfg.grad_accum_steps) == 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.student.parameters(), cfg.max_grad_norm)
 
@@ -207,7 +227,7 @@ def train(cfg: TrainCfg):
 
                 optim_step += 1
 
-                # logging accumulators
+                # track logs on optimizer step
                 running["mlm"] += float(mlm_loss.detach().cpu())
                 running["distill"] += float(distill_loss.detach().cpu())
                 running["cos"] += float(cos_loss.detach().cpu())
@@ -225,7 +245,7 @@ def train(cfg: TrainCfg):
                     )
                     running = {"mlm": 0.0, "distill": 0.0, "cos": 0.0, "total": 0.0}
 
-                if optim_step % cfg.save_every_steps == 0:
+                if cfg.save_every_steps and (optim_step % cfg.save_every_steps == 0):
                     ckpt_dir = os.path.join(cfg.save_dir, f"step_{optim_step}")
                     os.makedirs(ckpt_dir, exist_ok=True)
                     model.student.save_pretrained(ckpt_dir)
@@ -233,15 +253,15 @@ def train(cfg: TrainCfg):
                     print(f"Saved checkpoint: {ckpt_dir}")
 
                 if cfg.max_steps is not None and optim_step >= cfg.max_steps:
-                    print("Reached max_steps. Stopping.")
-                    final_dir = os.path.join(cfg.save_dir, "final")
-                    os.makedirs(final_dir, exist_ok=True)
-                    model.student.save_pretrained(final_dir)
-                    ds.tokenizer.save_pretrained(final_dir)
-                    return model
-                
-        # flush remaining accumulated gradients at epoch end
-    if raw_step % cfg.grad_accum_steps != 0:
+                    stop = True
+                    break
+
+        if stop:
+            break
+
+    # flush leftover grads if epoch ended mid-accumulation
+    # (only if we still have steps left and we accumulated something)
+    if (raw_step % cfg.grad_accum_steps) != 0 and (cfg.max_steps is None or optim_step < cfg.max_steps):
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.student.parameters(), cfg.max_grad_norm)
         scaler.step(optimizer)
@@ -250,12 +270,10 @@ def train(cfg: TrainCfg):
         scheduler.step()
         optim_step += 1
 
-    # final save
-    final_dir = os.path.join(cfg.save_dir, "final")
-    os.makedirs(final_dir, exist_ok=True)
-    model.student.save_pretrained(final_dir)
-    ds.tokenizer.save_pretrained(final_dir)
-    print(f"Training done. Final model saved to: {final_dir}")
+    # final save (USE output_dir, not save_dir/final)
+    model.student.save_pretrained(cfg.output_dir)
+    ds.tokenizer.save_pretrained(cfg.output_dir)
+    print(f"Training done. Final model saved to: {cfg.output_dir}")
     return model
 
 
@@ -268,14 +286,20 @@ def main():
     ap.add_argument("--weight_decay", type=float, default=0.01)
     ap.add_argument("--warmup_ratio", type=float, default=0.06)
     ap.add_argument("--grad_accum_steps", type=int, default=1)
-    ap.add_argument("--max_steps", type=int, default=0)
+    ap.add_argument("--max_steps", type=int, default=0, help="optimizer steps; 0 disables")
     ap.add_argument("--temperature", type=float, default=2.0)
     ap.add_argument("--alpha_mlm", type=float, default=1.0)
     ap.add_argument("--beta_distill", type=float, default=1.0)
     ap.add_argument("--gamma_cos", type=float, default=1.0)
     ap.add_argument("--no_fp16", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
+
     ap.add_argument("--save_dir", type=str, default="checkpoints")
+    ap.add_argument("--output_dir", type=str, default="checkpoints/final")
+
+    ap.add_argument("--dataset_mode", type=str, default="small", choices=["small", "paper"])
+    ap.add_argument("--data_dir", type=str, default="", help="required for dataset_mode=paper")
+
     args = ap.parse_args()
 
     cfg = TrainCfg(
@@ -294,7 +318,14 @@ def main():
         fp16=(not args.no_fp16),
         seed=args.seed,
         save_dir=args.save_dir,
+        output_dir=args.output_dir,
+        dataset_mode=args.dataset_mode,
+        data_dir=(args.data_dir if args.data_dir else None),
     )
+
+    # safety: paper mode needs data_dir
+    if cfg.dataset_mode == "paper" and cfg.data_dir is None:
+        raise ValueError("dataset_mode='paper' requires --data_dir")
 
     train(cfg)
 
