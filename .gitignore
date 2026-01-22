@@ -1,6 +1,7 @@
 # model artifacts
 checkpoints/
 src/checkpoints/
+*.safetensors
 
 # python cache
 __pycache__/
