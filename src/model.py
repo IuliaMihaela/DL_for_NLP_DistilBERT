@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from transformers import BertModel, DistilBertConfig, DistilBertForMaskedLM, BertForMaskedLM
+from transformers import DistilBertConfig, DistilBertForMaskedLM, BertForMaskedLM
 
 class DistilBertStudent(nn.Module):
     def __init__(self, teacher_model_name="bert-base-uncased"):
@@ -78,7 +78,35 @@ class DistilBertStudent(nn.Module):
                 tch_layer.output.LayerNorm.state_dict()
             )
 
+        # Teacher MLM head parts
+        t_dense = self.teacher.cls.predictions.transform.dense
+        t_ln    = self.teacher.cls.predictions.transform.LayerNorm
+        t_dec   = self.teacher.cls.predictions.decoder
+
+        # Student MLM head parts (DistilBERT)
+        s_dense = self.student.vocab_transform
+        s_ln    = self.student.vocab_layer_norm
+        s_proj  = self.student.vocab_projector
+
+        # Copy transform dense
+        s_dense.weight.data = t_dense.weight.data.clone()
+        s_dense.bias.data   = t_dense.bias.data.clone()
+
+        # Copy LayerNorm
+        s_ln.load_state_dict(t_ln.state_dict())
+
+        # Copy decoder/projection
+        s_proj.weight.data = t_dec.weight.data.clone()
+
+        # Copy bias if exists
+        if s_proj.bias is not None and t_dec.bias is not None:
+            s_proj.bias.data = t_dec.bias.data.clone()
+
+        # Important: keep tied weights consistent
+        self.student.tie_weights()
+
         print(f"Successfully initialized student with layers: {[i*2 for i in range(6)]}")
+        print("MLM head copied from teacher.")
 
     @torch.no_grad()
     def forward_teacher(self, input_ids, attention_mask=None):
