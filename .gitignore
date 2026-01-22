@@ -1,0 +1,7 @@
+# model artifacts
+checkpoints/
+src/checkpoints/
+
+# python cache
+__pycache__/
+*.pyc
