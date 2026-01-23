@@ -84,20 +84,6 @@ We additionally validated real edge deployment using:
 - Quantization + pruning introduces a small loss degradation  
 - Overall losses remain in a similar range -> Quality is preserved for deployment use-cases  
 
-### Downstream Tasks (IMDb / SQuAD)
-
-| Model | IMDb Acc | SQuAD EM | SQuAD F1 |
-|------|---------:|---------:|---------:|
-| Baseline | 100.00% | 8.10% | 13.76% |
-| Pruned | 100.00% | 7.30% | 13.05% |
-| Quantized | N/A | N/A | N/A |
-| Combined | N/A | N/A | N/A |
-
-Quantized/Combined are N/A  
-- The downstream evaluation pipeline uses HuggingFace Trainer (fine-tuning)  
-- Dynamically quantized INT8 PyTorch models are not trainable in this setup  
-- Downstream accuracy metrics were only computed for FP32 models
-
 ## Conclusion
 ### Is DistilBERT “edge-ready” out of the box?
 Not always.  
