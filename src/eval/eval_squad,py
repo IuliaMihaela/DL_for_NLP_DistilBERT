@@ -16,7 +16,6 @@ from transformers import (
 from utils import set_all_seeds, save_json, print_table, median
 
 def prepare_train_features(examples, tokenizer, max_length=384, doc_stride=128):
-    # стандартная подготовка SQuAD
     tokenized = tokenizer(
         examples["question"],
         examples["context"],
@@ -165,7 +164,6 @@ class DistillQATrainer(Trainer):
             p.requires_grad = False
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        # standard CE loss is computed by model when labels exist
         outputs = model(**inputs)
         ce_loss = outputs.loss
 
@@ -208,7 +206,7 @@ def run_one(model_name, seed, out_dir, use_distill, teacher_name=None, temperatu
         per_device_train_batch_size=12,
         per_device_eval_batch_size=12,
         num_train_epochs=2.0,
-        evaluation_strategy="no",
+        eval_strategy="no",
         save_strategy="no",
         logging_strategy="no",
         report_to=[],
@@ -218,8 +216,8 @@ def run_one(model_name, seed, out_dir, use_distill, teacher_name=None, temperatu
     metric = evaluate.load("squad")
 
     def postprocess_and_compute(p):
-        # p.predictions = (start_logits, end_logits)
         raw = p.predictions
+        # Correctly passing 'tok' (the local tokenizer) as the first argument
         preds = postprocess_qa_predictions(tok, ds["validation"], val_feats, raw)
         formatted_preds = [{"id": k, "prediction_text": v} for k, v in preds.items()]
         refs = [{"id": ex["id"], "answers": ex["answers"]} for ex in ds["validation"]]
@@ -294,7 +292,4 @@ def main():
     ])
 
 if __name__ == "__main__":
-    # # tokenizer used in postprocess
-    # global tokenizer
-    # tokenizer = None
     main()

@@ -3,8 +3,15 @@ import subprocess
 import argparse
 from datetime import datetime
 
+# Get the absolute path of the 'src' folder
+# This ensures train.py is found even if you run the script from the project root
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+
 def run(cmd, cwd=None):
-    print("\n>>", " ".join(cmd))
+    # If no cwd is specified, run inside the src folder
+    if cwd is None:
+        cwd = SRC_DIR
+    print(f"\n>> [CWD: {cwd}]", " ".join(cmd))
     subprocess.check_call(cmd, cwd=cwd)
 
 def eval_all(model_path: str, out_root: str):
@@ -13,17 +20,20 @@ def eval_all(model_path: str, out_root: str):
     """
     os.makedirs(out_root, exist_ok=True)
 
+    # Define the mapping of script names to output folders
+    # These paths are relative to the src/ folder
     eval_scripts = [
         ("eval/eval_glue.py", "glue"),
         ("eval/eval_imdb.py", "imdb"),
         ("eval/eval_squad.py", "squad"),
-        ("eval/benchmark_speed.py", None) 
+        ("eval/benchmark_speed.py", None) # No output dir needed for speed benchmark
     ]
 
     for script_rel_path, sub_dir in eval_scripts:
-        # Check if the script exists before trying to run it
-        if not os.path.exists(script_rel_path):
-            print(f"!! Warning: Skipping {script_rel_path} (File not found)")
+        # Check if the script exists inside src/ before trying to run it
+        full_script_path = os.path.join(SRC_DIR, script_rel_path)
+        if not os.path.exists(full_script_path):
+            print(f"!! Warning: Skipping {script_rel_path} (File not found at {full_script_path})")
             continue
         
         cmd = ["python", script_rel_path, "--model", model_path]
@@ -36,7 +46,7 @@ def eval_all(model_path: str, out_root: str):
             print(f"!! Error running {script_rel_path}, continuing to next eval...")
 
 def train_and_eval(tag: str, dataset_mode: str, subset_size: int, out_model_dir: str, eval_dir: str,
-                   data_dir: str | None, epochs: int, batch_size: int, grad_accum: int):
+                   data_dir: str | None, epochs: int, batch_size: int, grad_accum: int, no_fp16: bool = False):
     
     # 1. TRAIN
     cmd = ["python", "train.py",
@@ -48,7 +58,10 @@ def train_and_eval(tag: str, dataset_mode: str, subset_size: int, out_model_dir:
            "--output_dir", out_model_dir,
            "--save_dir", os.path.join(out_model_dir, "_steps")]
     
-    # Only add data_dir if it's actually provided 
+    if no_fp16:
+        cmd.append("--no_fp16")
+
+    # Only add data_dir if it's actually provided
     if data_dir:
         cmd += ["--data_dir", data_dir]
     
@@ -75,6 +88,8 @@ def main():
     ap.add_argument("--paper_ckpt", type=str, default="checkpoints_paper/final")
     ap.add_argument("--out_root", type=str, default="runs")
     
+    ap.add_argument("--no_fp16", action="store_true", help="Disable mixed precision (fixes NaN for small batches)")
+
     args = ap.parse_args()
 
     # Create run directory
@@ -105,7 +120,8 @@ def main():
         data_dir=None, # Small mode generates its own data
         epochs=args.epochs,
         batch_size=args.batch_size,
-        grad_accum=args.grad_accum
+        grad_accum=args.grad_accum,
+        no_fp16=args.no_fp16
     )
 
     # --- Run 2: Train Paper -> Eval ---
@@ -123,7 +139,8 @@ def main():
         data_dir=args.paper_data_dir,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        grad_accum=args.grad_accum
+        grad_accum=args.grad_accum,
+        no_fp16=args.no_fp16
     )
 
 if __name__ == "__main__":

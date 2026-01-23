@@ -85,7 +85,7 @@ def run_task(model_name_or_path: str, task: str, seed: int, out_dir: str, max_le
         per_device_train_batch_size=bs,
         per_device_eval_batch_size=bs,
         num_train_epochs=epochs,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",  
         save_strategy="no",
         logging_strategy="no",
         report_to=[],
