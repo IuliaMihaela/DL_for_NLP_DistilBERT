@@ -45,6 +45,34 @@ def masked_kl_div(student_logits, teacher_logits, labels, temperature=2.0):
     # Hinton: multiply by T^2
     return F.kl_div(s_log_probs, t_probs, reduction="batchmean") * (T * T)
 
+def full_distillation_loss(student_logits, teacher_logits, attention_mask, temperature=2.0):
+    """
+    KL(student || teacher) on ALL tokens (masked + unmasked), ignoring padding.
+    """
+    # Flatten to [Batch * SeqLen, Vocab]
+    vocab_size = student_logits.size(-1)
+    s_logits_flat = student_logits.view(-1, vocab_size)
+    t_logits_flat = teacher_logits.view(-1, vocab_size)
+    
+    # Create mask for valid tokens (1 = token, 0 = padding)
+    # Flatten attention_mask to [Batch * SeqLen]
+    mask_flat = attention_mask.view(-1) == 1
+    
+    # Select only valid tokens (remove padding)
+    s_logits_active = s_logits_flat[mask_flat]
+    t_logits_active = t_logits_flat[mask_flat]
+    
+    T = float(temperature)
+    
+    # Log Softmax for Student (KL input)
+    s_log_probs = F.log_softmax(s_logits_active / T, dim=-1)
+    
+    # Softmax for Teacher (KL target)
+    t_probs = F.softmax(t_logits_active / T, dim=-1)
+    
+    # KL * T^2
+    return F.kl_div(s_log_probs, t_probs, reduction="batchmean") * (T * T)
+
 
 def cosine_hidden_loss_last(student_hidden_states, teacher_hidden_states, attention_mask):
     """
@@ -59,6 +87,40 @@ def cosine_hidden_loss_last(student_hidden_states, teacher_hidden_states, attent
     cos = F.cosine_similarity(s_h, t_h, dim=-1)  # [B, L]
     return ((1.0 - cos) * attn).sum() / denom
 
+def cosine_loss_all_layers(student_hidden_states, teacher_hidden_states, attention_mask):
+    """
+    Aligns all corresponding hidden states (Student i -> Teacher 2*i).
+    """
+    attn = attention_mask.float()  # [B, L]
+    denom = attn.sum().clamp(min=1.0)
+    
+    total_loss = 0.0
+    n_layers_aligned = 0
+    
+    # Iterate over student layers
+    # student_hidden_states is a tuple of length (n_layers + 1) for embeddings
+    for i, s_h in enumerate(student_hidden_states):
+        teacher_idx = i * 2
+        
+        # Safety check to ensure we don't go out of bounds of the teacher
+        if teacher_idx >= len(teacher_hidden_states):
+            break
+            
+        t_h = teacher_hidden_states[teacher_idx]
+        
+        # Calculate cosine similarity for this layer pair
+        cos = F.cosine_similarity(s_h, t_h, dim=-1)  # [B, L]
+        
+        # Loss = 1 - cosine (masked by attention)
+        layer_loss = ((1.0 - cos) * attn).sum() / denom
+        
+        total_loss += layer_loss
+        n_layers_aligned += 1
+        
+    if n_layers_aligned == 0:
+        return torch.tensor(0.0, device=student_hidden_states[0].device)
+        
+    return total_loss / n_layers_aligned
 
 @dataclass
 class TrainCfg:
@@ -190,14 +252,25 @@ def train(cfg: TrainCfg):
                     labels=labels
                 )
 
-                distill_loss = masked_kl_div(
+                # distill_loss = masked_kl_div(
+                #     student_logits=student_logits,
+                #     teacher_logits=teacher_logits,
+                #     labels=labels,
+                #     temperature=cfg.temperature
+                # )
+
+                # cos_loss = cosine_hidden_loss_last(
+                #     student_hidden_states=student_hid,
+                #     teacher_hidden_states=teacher_hid,
+                #     attention_mask=attention_mask
+                # )
+                distill_loss = full_distillation_loss(
                     student_logits=student_logits,
                     teacher_logits=teacher_logits,
-                    labels=labels,
+                    attention_mask=attention_mask,  
                     temperature=cfg.temperature
                 )
-
-                cos_loss = cosine_hidden_loss_last(
+                cos_loss = cosine_loss_all_layers(
                     student_hidden_states=student_hid,
                     teacher_hidden_states=teacher_hid,
                     attention_mask=attention_mask

@@ -99,7 +99,7 @@ def prepare_validation_features(examples, tokenizer, max_length=384, doc_stride=
         ]
     return tokenized
 
-def postprocess_qa_predictions(examples, features, raw_predictions, n_best_size=20, max_answer_length=30):
+def postprocess_qa_predictions(tokenizer, examples, features, raw_predictions, n_best_size=20, max_answer_length=30):
     all_start_logits, all_end_logits = raw_predictions
     example_id_to_index = {k: i for i, k in enumerate(examples["id"])}
     features_per_example = collections.defaultdict(list)
@@ -220,7 +220,7 @@ def run_one(model_name, seed, out_dir, use_distill, teacher_name=None, temperatu
     def postprocess_and_compute(p):
         # p.predictions = (start_logits, end_logits)
         raw = p.predictions
-        preds = postprocess_qa_predictions(ds["validation"], val_feats, raw)
+        preds = postprocess_qa_predictions(tok, ds["validation"], val_feats, raw)
         formatted_preds = [{"id": k, "prediction_text": v} for k, v in preds.items()]
         refs = [{"id": ex["id"], "answers": ex["answers"]} for ex in ds["validation"]]
         return metric.compute(predictions=formatted_preds, references=refs)
@@ -294,7 +294,7 @@ def main():
     ])
 
 if __name__ == "__main__":
-    # tokenizer used in postprocess
-    global tokenizer
-    tokenizer = None
+    # # tokenizer used in postprocess
+    # global tokenizer
+    # tokenizer = None
     main()
