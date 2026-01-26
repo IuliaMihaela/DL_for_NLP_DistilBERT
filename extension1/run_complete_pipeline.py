@@ -1,6 +1,4 @@
-"""
-run_complete_pipeline.py
-"""
+# run_complete_pipeline.py
 
 import torch
 import os, sys
