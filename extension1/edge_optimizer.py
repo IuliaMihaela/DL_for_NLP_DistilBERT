@@ -22,18 +22,10 @@ sys.path.insert(0, SRC_DIR)
 from src.model import DistilBertStudent  
 
 import torch.nn.functional as F
-import string
-import collections
-from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForMaskedLM, 
     DataCollatorForLanguageModeling,
-    DistilBertForSequenceClassification,
-    DistilBertForQuestionAnswering,
-    TrainingArguments,
-    Trainer,
-    default_data_collator,
 )
 
 
@@ -533,13 +525,6 @@ class PruningOptimizer:
         self.model = model
 
     def apply_magnitude_pruning(self, amount: float = 0.3) -> nn.Module:
-        """
-        L1 magnitude-based unstructured pruning
-
-        Args:
-            amount: Fraction of weights to prune (0.0-1.0)
-                   0.3 = remove 30% smallest weights
-        """
         print(f"\n[Pruning] Applying magnitude pruning (amount={amount})...")
 
         # Extract student model
@@ -580,405 +565,6 @@ class PruningOptimizer:
 
         return (zero_params / total_params) * 100
 
-    
-# IMDb (test accuracy) + SQuAD 1.1 (dev EM/F1)
-# Evaluated only on FP32 models (Baseline and Pruned)
-# The downstream evaluators fine-tune using Hugging Face Trainer,
-#     but dynamically quantized INT8 models (Quantized/Combined) are not trainable with Trainer in this setup.
-class DownstreamEvaluator:
-    def __init__(
-        self,
-        tokenizer,
-        device: str = "cpu", # Same with provided research paper
-        seed: int = 1234,
-
-        imdb_train_samples: int = 5000,
-        imdb_test_samples: int = 5000,
-        squad_train_samples: int = 2000,
-        squad_dev_samples: int = 1000,
-
-        epochs: float = 1.0,
-        lr: float = 5e-5,
-        batch_size: int = 8,
-        max_length: int = 256,
-        squad_max_answer_length: int = 30,
-        output_dir: str = "downstream_ckpts",
-    ):
-        self.tokenizer = tokenizer
-        self.device = device
-        self.seed = seed
-
-        self.imdb_train_samples = imdb_train_samples
-        self.imdb_test_samples = imdb_test_samples
-        self.squad_train_samples = squad_train_samples
-        self.squad_dev_samples = squad_dev_samples
-
-        self.epochs = epochs
-        self.lr = lr
-        self.batch_size = batch_size
-        self.max_length = max_length
-        self.squad_max_answer_length = squad_max_answer_length
-        self.output_dir = output_dir
-
-        os.makedirs(self.output_dir, exist_ok=True)
-
-    # Backbone to downstream head
-    def _unwrap_backbone(self, model: nn.Module) -> nn.Module:
-        # DistilBertStudent wrapper 
-        return model.student if hasattr(model, "student") else model
-
-    def _is_trainable_float_model(self, model: nn.Module) -> bool:
-        for p in model.parameters():
-            if p.dtype not in (torch.float16, torch.float32, torch.float64):
-                return False
-        return True
-
-    # Initialization DistilBertForMaskedLM -> DistilBertForSequenceClassification
-    def _build_seq_cls_from_mlm(self, mlm_model: nn.Module, num_labels: int = 2):
-        m = self._unwrap_backbone(mlm_model)
-
-        backbone = m.distilbert if hasattr(m, "distilbert") else m
-
-        cfg = backbone.config
-        cfg.num_labels = num_labels
-
-        seq_model = DistilBertForSequenceClassification(cfg)
-        # backbone weights transplant
-        seq_model.distilbert.load_state_dict(backbone.state_dict(), strict=True)
-        return seq_model
-        
-    # Initialization DistilBertForMaskedLM -> DistilBertForQuestionAnswering
-    def _build_qa_from_mlm(self, mlm_model: nn.Module):
-        m = self._unwrap_backbone(mlm_model)
-        backbone = m.distilbert if hasattr(m, "distilbert") else m
-        cfg = backbone.config
-
-        qa_model = DistilBertForQuestionAnswering(cfg)
-        qa_model.distilbert.load_state_dict(backbone.state_dict(), strict=True)
-        return qa_model
-
-    # IMDb
-    def _imdb_tokenize(self, examples):
-        return self.tokenizer(
-            examples["text"],
-            truncation=True,
-            padding="max_length",
-            max_length=min(self.max_length, 256),
-        )
-
-    # IMDb accuracy after lightweight fine-tuning.
-    def evaluate_imdb_test_accuracy(self, mlm_or_student_model: nn.Module) -> Optional[float]:
-        if not self._is_trainable_float_model(self._unwrap_backbone(mlm_or_student_model)):
-            return None
-
-        ds = load_dataset("imdb")
-
-        train_ds = ds["train"]
-        test_ds = ds["test"]
-
-        if self.imdb_train_samples and self.imdb_train_samples < len(train_ds):
-            train_ds = train_ds.select(range(self.imdb_train_samples))
-        if self.imdb_test_samples and self.imdb_test_samples < len(test_ds):
-            test_ds = test_ds.select(range(self.imdb_test_samples))
-
-        train_ds = train_ds.map(self._imdb_tokenize, batched=True, remove_columns=["text"])
-        test_ds = test_ds.map(self._imdb_tokenize, batched=True, remove_columns=["text"])
-
-        train_ds.set_format("torch")
-        test_ds.set_format("torch")
-
-        model = self._build_seq_cls_from_mlm(mlm_or_student_model, num_labels=2)
-        model.to(self.device)
-
-        def compute_metrics(eval_pred):
-            logits, labels = eval_pred
-            preds = np.argmax(logits, axis=-1)
-            acc = (preds == labels).mean().item()
-            return {"accuracy": acc}
-
-        args = TrainingArguments(
-            output_dir=os.path.join(self.output_dir, "imdb"),
-            eval_strategy="epoch",  # NEW - correct parameter name
-            save_strategy="no",
-            learning_rate=self.lr,
-            per_device_train_batch_size=self.batch_size,
-            per_device_eval_batch_size=self.batch_size,
-            num_train_epochs=self.epochs,
-            weight_decay=0.0,
-            logging_steps=50,
-            seed=self.seed,
-            report_to=[],
-        )
-
-        trainer = Trainer(
-            model=model,
-            args=args,
-            train_dataset=train_ds,
-            eval_dataset=test_ds,
-            tokenizer=self.tokenizer,
-            data_collator=default_data_collator,
-            compute_metrics=compute_metrics,
-        )
-
-        trainer.train()
-        metrics = trainer.evaluate(test_ds)
-        return float(metrics.get("eval_accuracy", 0.0))
-
-    # SQuAD 1.1
-    @staticmethod
-    def _normalize_answer(s: str) -> str:
-        def lower(text): return text.lower()
-        def remove_punc(text): return "".join(ch for ch in text if ch not in set(string.punctuation))
-        def remove_articles(text): return re.sub(r"\b(a|an|the)\b", " ", text)
-        def white_space_fix(text): return " ".join(text.split())
-        return white_space_fix(remove_articles(remove_punc(lower(s))))
-
-    @staticmethod
-    def _f1_score(prediction: str, ground_truth: str) -> float:
-        pred_tokens = DownstreamEvaluator._normalize_answer(prediction).split()
-        gt_tokens = DownstreamEvaluator._normalize_answer(ground_truth).split()
-        common = collections.Counter(pred_tokens) & collections.Counter(gt_tokens)
-        num_same = sum(common.values())
-        if len(pred_tokens) == 0 or len(gt_tokens) == 0:
-            return float(pred_tokens == gt_tokens)
-        if num_same == 0:
-            return 0.0
-        precision = num_same / len(pred_tokens)
-        recall = num_same / len(gt_tokens)
-        return 2 * precision * recall / (precision + recall)
-
-    @staticmethod
-    def _exact_match_score(prediction: str, ground_truth: str) -> float:
-        return float(DownstreamEvaluator._normalize_answer(prediction) == DownstreamEvaluator._normalize_answer(ground_truth))
-
-    # HuggingFace SQuAD pre-training: question/context -> input_ids + start/end labels
-    def _squad_prepare_train_features(self, examples):
-        questions = [q.lstrip() for q in examples["question"]]
-        enc = self.tokenizer(
-            questions,
-            examples["context"],
-            truncation="only_second",
-            max_length=self.max_length,
-            stride=64,
-            return_overflowing_tokens=True,
-            return_offsets_mapping=True,
-            padding="max_length",
-        )
-
-        sample_mapping = enc.pop("overflow_to_sample_mapping")
-        offset_mapping = enc.pop("offset_mapping")
-
-        start_positions = []
-        end_positions = []
-
-        for i, offsets in enumerate(offset_mapping):
-            input_ids = enc["input_ids"][i]
-            cls_index = input_ids.index(self.tokenizer.cls_token_id)
-
-            seq_ids = enc.sequence_ids(i)
-            sample_idx = sample_mapping[i]
-            answers = examples["answers"][sample_idx]
-            if len(answers["answer_start"]) == 0:
-                start_positions.append(cls_index)
-                end_positions.append(cls_index)
-                continue
-
-            start_char = answers["answer_start"][0]
-            end_char = start_char + len(answers["text"][0])
-
-            # Find context token
-            token_start_index = 0
-            while seq_ids[token_start_index] != 1:
-                token_start_index += 1
-            token_end_index = len(input_ids) - 1
-            while seq_ids[token_end_index] != 1:
-                token_end_index -= 1
-
-            # If there's no answer in span -> CLS
-            if not (offsets[token_start_index][0] <= start_char and offsets[token_end_index][1] >= end_char):
-                start_positions.append(cls_index)
-                end_positions.append(cls_index)
-            else:
-                while token_start_index < len(offsets) and offsets[token_start_index][0] <= start_char:
-                    token_start_index += 1
-                start_positions.append(token_start_index - 1)
-
-                while offsets[token_end_index][1] >= end_char:
-                    token_end_index -= 1
-                end_positions.append(token_end_index + 1)
-
-        enc["start_positions"] = start_positions
-        enc["end_positions"] = end_positions
-        return enc
-
-    def _squad_prepare_validation_features(self, examples):
-        questions = [q.lstrip() for q in examples["question"]]
-        enc = self.tokenizer(
-            questions,
-            examples["context"],
-            truncation="only_second",
-            max_length=self.max_length,
-            stride=64,
-            return_overflowing_tokens=True,
-            return_offsets_mapping=True,
-            padding="max_length",
-        )
-
-        sample_mapping = enc.pop("overflow_to_sample_mapping")
-        enc["example_id"] = []
-
-        for i in range(len(enc["input_ids"])):
-            sample_idx = sample_mapping[i]
-            enc["example_id"].append(examples["id"][sample_idx])
-
-            seq_ids = enc.sequence_ids(i)
-            offsets = enc["offset_mapping"][i]
-            enc["offset_mapping"][i] = [
-                o if seq_ids[k] == 1 else None for k, o in enumerate(offsets)
-            ]
-        return enc
-
-    # start/end logits -> best span
-    def _squad_postprocess_predictions(self, examples, features, raw_predictions):
-        all_start_logits, all_end_logits = raw_predictions
-        example_id_to_index = {k: i for i, k in enumerate(examples["id"])}
-        features_per_example = collections.defaultdict(list)
-        for i, f in enumerate(features):
-            features_per_example[example_id_to_index[f["example_id"]]].append(i)
-
-        predictions = collections.OrderedDict()
-
-        for example_index, example in enumerate(examples):
-            feature_indices = features_per_example[example_index]
-            context = example["context"]
-
-            best_answer = {"text": "", "score": -1e9}
-
-            for fi in feature_indices:
-                start_logits = all_start_logits[fi]
-                end_logits = all_end_logits[fi]
-                offset_mapping = features[fi]["offset_mapping"]
-
-                start_indexes = np.argsort(start_logits)[-20:][::-1]
-                end_indexes = np.argsort(end_logits)[-20:][::-1]
-
-                for s in start_indexes:
-                    for e in end_indexes:
-                        if s >= len(offset_mapping) or e >= len(offset_mapping):
-                            continue
-                        if offset_mapping[s] is None or offset_mapping[e] is None:
-                            continue
-                        if e < s:
-                            continue
-                        if (e - s + 1) > self.squad_max_answer_length:
-                            continue
-                        start_char = offset_mapping[s][0]
-                        end_char = offset_mapping[e][1]
-                        text = context[start_char:end_char]
-                        score = start_logits[s] + end_logits[e]
-                        if score > best_answer["score"]:
-                            best_answer = {"text": text, "score": score}
-
-            predictions[example["id"]] = best_answer["text"]
-
-        return predictions
-
-    # SQuAD 1.1 dev (EM, F1) after lightweight fine-tuning
-    def evaluate_squad11_dev_em_f1(self, mlm_or_student_model: nn.Module) -> (Optional[float], Optional[float]):
-        if not self._is_trainable_float_model(self._unwrap_backbone(mlm_or_student_model)):
-            return (None, None)
-
-        ds = load_dataset("squad")  # SQuAD 1.1
-
-        train_ds = ds["train"]
-        dev_ds = ds["validation"]
-
-        if self.squad_train_samples and self.squad_train_samples < len(train_ds):
-            train_ds = train_ds.select(range(self.squad_train_samples))
-        if self.squad_dev_samples and self.squad_dev_samples < len(dev_ds):
-            dev_ds = dev_ds.select(range(self.squad_dev_samples))
-
-        train_features = train_ds.map(
-            self._squad_prepare_train_features,
-            batched=True,
-            remove_columns=train_ds.column_names,
-        )
-        dev_features = dev_ds.map(
-            self._squad_prepare_validation_features,
-            batched=True,
-            remove_columns=dev_ds.column_names,
-        )
-
-        train_features.set_format("torch")
-        dev_features.set_format("torch")
-
-        model = self._build_qa_from_mlm(mlm_or_student_model)
-        model.to(self.device)
-
-        args = TrainingArguments(
-            output_dir=os.path.join(self.output_dir, "squad"),
-            eval_strategy="no",  # NEW - correct parameter name
-            save_strategy="no",
-            learning_rate=self.lr,
-            per_device_train_batch_size=self.batch_size,
-            per_device_eval_batch_size=self.batch_size,
-            num_train_epochs=self.epochs,
-            weight_decay=0.0,
-            logging_steps=50,
-            seed=self.seed,
-            report_to=[],
-        )
-
-        trainer = Trainer(
-            model=model,
-            args=args,
-            train_dataset=train_features,
-            eval_dataset=dev_features,
-            tokenizer=self.tokenizer,
-            data_collator=default_data_collator,
-        )
-
-        trainer.train()
-
-        # Predict start/end logits on features
-        raw_pred = trainer.predict(dev_features)
-        start_logits, end_logits = raw_pred.predictions
-
-        # post-process to text answers
-        examples = dev_ds
-        features = dev_features
-
-        features_list = []
-        for i in range(len(features)):
-            features_list.append({
-                "input_ids": features[i]["input_ids"].tolist() if hasattr(features[i]["input_ids"], "tolist") else features[i]["input_ids"],
-                "offset_mapping": features[i]["offset_mapping"],
-                "example_id": features[i]["example_id"],
-            })
-
-        preds = self._squad_postprocess_predictions(examples, features_list, (start_logits, end_logits))
-
-        # Compute EM/F1
-        em_sum = 0.0
-        f1_sum = 0.0
-        n = 0
-
-        for ex in examples:
-            gold_answers = ex["answers"]["text"]
-            pred = preds.get(ex["id"], "")
-
-            # SQuAD: Best score 
-            em = max(self._exact_match_score(pred, ga) for ga in gold_answers) if gold_answers else 0.0
-            f1 = max(self._f1_score(pred, ga) for ga in gold_answers) if gold_answers else 0.0
-
-            em_sum += em
-            f1_sum += f1
-            n += 1
-
-        em_final = em_sum / max(1, n)
-        f1_final = f1_sum / max(1, n)
-        return (float(em_final), float(f1_final))
-
 
 
 # COMBINED OPTIMIZATION PIPELINE
@@ -1007,41 +593,6 @@ class EdgeOptimizationPipeline:
             )
             print(f"[INFO] Loaded eval_texts from validation: {len(eval_texts)} samples")
     
-        # Downstream evaluator
-        down_eval = DownstreamEvaluator(
-            tokenizer=self.tokenizer,
-            device=self.device,
-            imdb_train_samples=5000,
-            imdb_test_samples=5000,
-            squad_train_samples=2000,
-            squad_dev_samples=1000,
-            epochs=1.0,
-            batch_size=8,
-            max_length=256,
-        )
-    
-        # Add Table2/3 metrics safely (From Research Paper)
-        def add_table23_metrics(result_dict: Dict, model_for_infer: nn.Module, model_for_downstream: nn.Module, do_downstream: bool):
-            # Table 3
-            result_dict["full_pass_time_s_cpu_bs1"] = measure_full_pass_inference_time(
-                model=model_for_infer,
-                tokenizer=self.tokenizer,
-                texts=eval_texts,
-                device="cpu",
-                max_length=128,
-            )
-    
-            if do_downstream:
-                imdb_acc = down_eval.evaluate_imdb_test_accuracy(model_for_downstream)
-                squad_em, squad_f1 = down_eval.evaluate_squad11_dev_em_f1(model_for_downstream)
-                result_dict["imdb_test_accuracy"] = imdb_acc
-                result_dict["squad11_dev_em"] = squad_em
-                result_dict["squad11_dev_f1"] = squad_f1
-            else:
-                result_dict["imdb_test_accuracy"] = None
-                result_dict["squad11_dev_em"] = None
-                result_dict["squad11_dev_f1"] = None
-    
         # 1) Baseline
         print("\n" + "="*70)
         print("STEP 1: BASELINE BENCHMARK")
@@ -1049,13 +600,8 @@ class EdgeOptimizationPipeline:
     
         baseline_bench = EdgeBenchmark(self.original_model, self.tokenizer, self.device, teacher_model=self.teacher)
         self.results["baseline"] = baseline_bench.run_all_benchmarks(eval_sentences=eval_texts)
-    
-        # baseline infer model: deployable student
-        add_table23_metrics(
-            result_dict=self.results["baseline"],
-            model_for_infer=baseline_bench.m,
-            model_for_downstream=self.original_model,
-            do_downstream=True,
+        self.results["baseline"]["full_pass_time_s_cpu_bs1"] = measure_full_pass_inference_time(
+            model=baseline_bench.m, tokenizer=self.tokenizer, texts=eval_texts, device="cpu"
         )
     
         # 2) Quantization
@@ -1068,14 +614,10 @@ class EdgeOptimizationPipeline:
     
         quant_bench = EdgeBenchmark(quantized_model, self.tokenizer, self.device, teacher_model=self.teacher)
         self.results["quantized"] = quant_bench.run_all_benchmarks(eval_sentences=eval_texts)
-    
-        add_table23_metrics(
-            result_dict=self.results["quantized"],
-            model_for_infer=quant_bench.m,
-            model_for_downstream=quantized_model,
-            do_downstream=False,
+        self.results["quantized"]["full_pass_time_s_cpu_bs1"] = measure_full_pass_inference_time(
+            model=quant_bench.m, tokenizer=self.tokenizer, texts=eval_texts, device="cpu"
         )
-    
+            
         # 3) Pruning
         print("\n" + "="*70)
         print("STEP 3: PRUNING")
@@ -1088,12 +630,8 @@ class EdgeOptimizationPipeline:
     
         prune_bench = EdgeBenchmark(pruned_model, self.tokenizer, self.device, teacher_model=self.teacher)
         self.results["pruned"] = prune_bench.run_all_benchmarks(eval_sentences=eval_texts)
-    
-        add_table23_metrics(
-            result_dict=self.results["pruned"],
-            model_for_infer=prune_bench.m,
-            model_for_downstream=pruned_model,
-            do_downstream=True,
+        self.results["pruned"]["full_pass_time_s_cpu_bs1"] = measure_full_pass_inference_time(
+            model=prune_bench.m, tokenizer=self.tokenizer, texts=eval_texts, device="cpu"
         )
     
         # 4) Combined (Prune + Quant)
@@ -1111,12 +649,8 @@ class EdgeOptimizationPipeline:
     
         combined_bench = EdgeBenchmark(combined_model, self.tokenizer, self.device, teacher_model=self.teacher)
         self.results["combined"] = combined_bench.run_all_benchmarks(eval_sentences=eval_texts)
-    
-        add_table23_metrics(
-            result_dict=self.results["combined"],
-            model_for_infer=combined_bench.m,
-            model_for_downstream=combined_model,
-            do_downstream=False,
+        self.results["combined"]["full_pass_time_s_cpu_bs1"] = measure_full_pass_inference_time(
+            model=combined_bench.m, tokenizer=self.tokenizer, texts=eval_texts, device="cpu"
         )
     
         self.print_comparison_table()
@@ -1142,9 +676,6 @@ class EdgeOptimizationPipeline:
             ('distill_eval_loss', 'Distill Eval Loss', '{:.4f}'),
             ('cosine_eval_loss', 'Cosine Eval Loss', '{:.4f}'),
             ('full_pass_time_s_cpu_bs1', 'Full-pass Time (s) CPU bs=1', '{:.2f}'),
-            ('imdb_test_accuracy', 'IMDb Test Acc.', '{:.2%}'),
-            ('squad11_dev_em', 'SQuAD1.1 Dev EM', '{:.2%}'),
-            ('squad11_dev_f1', 'SQuAD1.1 Dev F1', '{:.2%}'),
         ]
 
         # Print header
