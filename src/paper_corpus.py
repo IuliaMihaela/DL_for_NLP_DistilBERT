@@ -1,81 +1,71 @@
-from datasets import load_dataset, concatenate_datasets, IterableDataset, interleave_datasets
-from transformers import AutoTokenizer, DataCollatorForLanguageModeling
-from torch.utils.data import DataLoader
-from itertools import chain
+import torch
+from torch.utils.data import DataLoader, IterableDataset
+from transformers import AutoTokenizer, default_data_collator
+from datasets import load_dataset
 
-def get_paper_corpus(tokenizer_name="bert-base-uncased", streaming=False):
+def get_paper_corpus(tokenizer_name, streaming=True):
     """
-    Paper corpus: English Wikipedia + BookCorpus (as in BERT/DistilBERT papers),
-    if available via datasets.
+    Loads WikiText-103, which is a large, clean subset of Verified Wikipedia articles.
+    This replaces the old 'wikipedia' dataset which is no longer supported by modern
+    Hugging Face versions due to security changes.
     """
-    wiki = load_dataset("wikipedia", "20220301.en", split="train", streaming=streaming, trust_remote_code=True) # alt: other snapshots
-    book = load_dataset("bookcorpus", split="train", streaming=streaming, trust_remote_code=True)
+    # Load WikiText-103 (Raw version, train split)
+    #ds = load_dataset("wikitext", "wikitext-103-raw-v1", split="train", streaming=streaming, revision="main")
+    ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train", streaming=streaming)
+    
+    # WikiText has a 'text' column, but some rows are empty headers. We filter them.
+    ds = ds.filter(lambda x: len(x["text"]) > 10)
+    
+    return ds
 
-    # keep only text columns
-    if not streaming:
-        wiki = wiki.remove_columns([c for c in wiki.column_names if c != "text"])
-        book = book.remove_columns([c for c in book.column_names if c != "text"])
+def build_mlm_dataloader(tokenizer_name, block_size=128, batch_size=8, mlm_probability=0.15, streaming=True):
+    """
+    Builds a streaming DataLoader for Masked Language Modeling (MLM).
+    """
+    dataset = get_paper_corpus(tokenizer_name, streaming=streaming)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
-    if streaming:
-        return interleave_datasets([wiki, book])
+    # 1. Tokenize function
+    def tokenize_function(examples):
+        return tokenizer(examples["text"], truncation=True, max_length=512)
 
-    return concatenate_datasets([wiki, book])
+    # 2. Apply tokenization
+    # Note: When streaming, we use map() directly. 
+    # We allow the tokenizer to run on variable lengths, then we group them below.
+    tokenized_datasets = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
 
-def build_mlm_dataloader(
-    tokenizer_name="bert-base-uncased",
-    block_size=512,
-    batch_size=8,
-    num_workers=0,
-    mlm_probability=0.15,
-    streaming=False,
-):
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
-    ds = get_paper_corpus(tokenizer_name, streaming=streaming)
-
-    # Tokenize
-    def tokenize_fn(examples):
-        return tokenizer(examples["text"], return_special_tokens_mask=True)
-
-    tokenized = ds.map(
-        tokenize_fn,
-        batched=True,
-        remove_columns=["text", "id", "title", "url"] if not streaming else None,
-        desc="Tokenizing",
-    )
-
-    # Group texts into contiguous chunks (RoBERTa-style)
+    # 3. Grouping function (concatenates texts and chops them into block_size chunks)
     def group_texts(examples):
-        # concatenated = {k: sum(examples[k], []) for k in examples.keys()}
-        concatenated = {k: list(chain(*examples[k])) for k in examples.keys()}
-        total_len = len(concatenated["input_ids"])
-        if total_len >= block_size:
-            total_len = (total_len // block_size) * block_size
+        # Concatenate all texts
+        concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
+        total_length = len(concatenated_examples[list(examples.keys())[0]])
+        
+        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can customize this part to your needs.
+        if total_length >= block_size:
+            total_length = (total_length // block_size) * block_size
+            
+        # Split by chunks of max_len
         result = {
-            k: [t[i : i + block_size] for i in range(0, total_len, block_size)]
-            for k, t in concatenated.items()
+            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+            for k, t in concatenated_examples.items()
         }
         return result
 
-    lm_ds = tokenized.map(group_texts, batched=True, desc="Grouping into blocks")
+    # 4. Apply grouping
+    # Using a large batch size for mapping ensures we have enough tokens to fill blocks
+    lm_datasets = tokenized_datasets.map(group_texts, batched=True, batch_size=1000)
 
-    # For streaming datasets,  shuffle buffer
-    if streaming:
-        lm_ds = lm_ds.shuffle(buffer_size=10_000)
-
-    collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=True,
-        mlm_probability=mlm_probability,
+    # 5. Data Collator (Handles the [MASK]ing automatically)
+    from transformers import DataCollatorForLanguageModeling
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer, mlm=True, mlm_probability=mlm_probability
     )
 
+    # 6. Build Loader
     loader = DataLoader(
-        lm_ds,
+        lm_datasets,
         batch_size=batch_size,
-        #shuffle=True,
-        shuffle=(not streaming),
-        num_workers=num_workers,
-        collate_fn=collator,
-        pin_memory=True,
+        collate_fn=data_collator
     )
-
+    
     return loader, tokenizer

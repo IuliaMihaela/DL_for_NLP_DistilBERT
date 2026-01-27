@@ -22,6 +22,14 @@ def download_eval_data():
     load_dataset("squad")
     evaluate.load("squad")
 
+    # 4. WikiText-103 (For Paper Training)
+    # This fixes the "ValueError: Couldn't find cache" error
+    print("\n>> Downloading WikiText-103 (For Paper Training)...")
+    # We download the 'raw' version which matches what we use in paper_corpus.py
+    #load_dataset("wikitext", "wikitext-103-raw-v1", revision="main")
+    load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1")
+
+
     print("\n=== All Evaluation Data Downloaded and Cached Successfully! ===")
 
 if __name__ == "__main__":
