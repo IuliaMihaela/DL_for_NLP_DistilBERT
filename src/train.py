@@ -198,7 +198,21 @@ def train(cfg: TrainCfg):
     # Compute total optimizer steps correctly
     # ---------------------------
     # optimizer step happens every grad_accum_steps batches
-    steps_per_epoch = math.ceil(len(loader) / cfg.grad_accum_steps)
+    #steps_per_epoch = math.ceil(len(loader) / cfg.grad_accum_steps)
+    loader = ds.get_data_loader(batch_size=cfg.batch_size)
+    try:
+        # Try getting the exact length (works for small/local datasets)
+        total_batches = len(loader)
+    except TypeError:
+        # If streaming (WikiText-103), len() fails. We use an estimate.
+        # WikiText-103 has ~100M tokens. With block_size=128, that's ~781,000 samples.
+        print("!! Streaming dataset detected (no len()). Using estimated size for progress bar.")
+        estimated_samples = 781000 
+        total_batches = estimated_samples // cfg.batch_size
+    
+    steps_per_epoch = math.ceil(total_batches / cfg.grad_accum_steps)
+
+
     total_optim_steps = steps_per_epoch * cfg.epochs
 
     # If user sets max_steps, cap training
