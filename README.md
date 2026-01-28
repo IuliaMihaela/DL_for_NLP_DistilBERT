@@ -6,11 +6,12 @@ https://arxiv.org/abs/1910.01108
 
 # Extension 1: DistilBERT Edge Deployment Reality Check
 
-Does DistilBERT really run efficiently on edge devices, and if not, how much can we optimize it?
+- Does DistilBERT really run efficiently on edge devices?  
+- If not, how much can we optimize it?  
 
 Implement quantization, pruning, and combination(quantization + pruning)  
-- benchmarked size/speed/quality trade-offs  
-- verified edge feasibility through ONNX Runtime on Android
+- Benchmarked size, speed, quality trade-offs  
+- Verified edge feasibility through ONNX Runtime on Android
 
 ## Research Questions  
 - Does the trained DistilBERT actually run efficiently on edge devices?  
@@ -27,15 +28,15 @@ Implement quantization, pruning, and combination(quantization + pruning)
 
 (2) Quantization (INT8)  
 - Applied post-training dynamic quantization (Linear layers → INT8)
-- Goal: reduce model size + improve inference speed for deployment
+- Reduce model size + improve inference speed for deployment
 
 (3) Pruning  
 - Applied global unstructured magnitude pruning
-- Goal: reduce redundant weights / improve runtime
+- Reduce redundant weights / improve runtime
 
 (4) Combined (Pruning + Quantization)  
 - Applied pruning first, then quantization  
-- Goal: maximize compression + speed-up
+- Maximize compression + speed-up
 
 ## Benchmark Setup
 ### CPU Benchmark (Python)  
@@ -52,9 +53,7 @@ Implement quantization, pruning, and combination(quantization + pruning)
 - Cosine Eval Loss
 
 ### Android Edge Benchmark (ONNX Runtime)  
-We additionally validated real edge deployment using:  
 - ONNX Runtime Android
-- Measured forward pass latency only (tokenization excluded)
 - Device info:
   - Android 14 (API 34, UpsideDownCake)
   - ABI: arm64-v8a
@@ -85,12 +84,6 @@ We additionally validated real edge deployment using:
 - Overall losses remain in a similar range -> Quality is preserved for deployment use-cases  
 
 ## Conclusion
-### Is DistilBERT “edge-ready” out of the box?
-Not always.  
-- The paper claims DistilBERT is “edge-ready” (~207MB range)  
-- Our trained baseline is still large: 255.57MB    
-- This size can cause issues on constrained devices (RAM/storage/cold start)  
-
 ### What worked best for edge deployment?
 - INT8 quantization provides the biggest practical gain.  
 - Model size reduced by 39.4%  
@@ -98,7 +91,7 @@ Not always.
 - Memory footprint dropped significantly (60.70MB -> 4.05MB)
 
 ### Does pruning help?
-- Pruning alone did not reduce file size (still FP32 storage)  
+- Pruning alone did not reduce file size 
 - Throughput improvement was minimal  
 - It can reduce runtime memory depending on implementation, but file size remains large  
 
@@ -126,7 +119,7 @@ We export FP32 ONNX first, then apply ONNX Runtime quantization:
 | distilbert_pruned_int8.onnx | 86.71 | 51.29 | 51.28 | 51.73 |
 
 INT8 quantization is the most effective optimization for edge.  
-- Model size drops to ~155MB.  
+- Model size drops.  
 - Latency becomes much faster on Android.  
 - Throughput increases a lot.  
 
@@ -134,16 +127,16 @@ Pruning alone is not enough.
 - It does not reduce model file size (still ~255MB).  
 - It gives small or inconsistent speed gain.  
 
-Quantization + pruning (“combined”) does not beat pure INT8.
+Quantization + pruning does not beat pure INT8.
 - Combined is similar size to INT8.  
 - Combined latency can even be worse (because unstructured pruning is not hardware-friendly).
 
 Quality did not collapse after INT8.  
-- MLM / distillation / cosine losses stay close to baseline.  
+- MLM, distillation, cosine losses stay close to baseline.  
 - So INT8 keeps behavior reasonably similar for the student model.  
 
 
-Best trade-off: INT8 quantization only.    
+Best Model: INT8 quantization     
 - Best for speed + size + deployability.    
 
 **DistilBERT is “edge-runnable”, but not “edge-efficient” until you apply quantization.**
