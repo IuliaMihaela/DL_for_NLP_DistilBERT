@@ -1,6 +1,5 @@
-"""
-edge_optimizer.py
-"""
+# edge_optimizer.py
+
 import re
 import torch
 import torch.nn as nn
