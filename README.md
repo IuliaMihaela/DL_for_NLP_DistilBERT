@@ -67,9 +67,9 @@ We additionally validated real edge deployment using:
 | Model | Size (MB) | Params | Cold Start (ms) | Throughput (samples/s) | Peak Memory (MB) |
 |------|----------:|-------:|----------------:|------------------------:|-----------------:|
 | Baseline | 255.57 | 66,985,530 | 15.51 | 82.33 | 60.70 |
-| Quantized (INT8) | 154.77 | 23,855,616 | 12.15 | 136.39 | 4.05 |
+| Quantized (INT8) | 154.77 | 66,985,530 | 12.15 | 136.39 | 4.05 |
 | Pruned | 255.57 | 66,985,530 | 12.65 | 82.82 | 0.41 |
-| Combined (Prune+INT8) | 154.77 | 23,855,616 | **9.28** | 135.05 | **0.00** |
+| Combined (Prune+INT8) | 154.77 | 66,985,530 | **9.28** | 135.05 | **0.00** |
 
 
 ### Quality (Loss-based Evaluation) (Lower is better)
