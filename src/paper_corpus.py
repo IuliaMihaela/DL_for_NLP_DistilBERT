@@ -6,14 +6,12 @@ from datasets import load_dataset
 def get_paper_corpus(tokenizer_name, streaming=True):
     """
     Loads WikiText-103, which is a large, clean subset of Verified Wikipedia articles.
-    This replaces the old 'wikipedia' dataset which is no longer supported by modern
-    Hugging Face versions due to security changes.
     """
     # Load WikiText-103 (Raw version, train split)
     #ds = load_dataset("wikitext", "wikitext-103-raw-v1", split="train", streaming=streaming, revision="main")
     ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train", streaming=streaming)
     
-    # WikiText has a 'text' column, but some rows are empty headers. We filter them.
+    # filter potential rows with empty headers
     ds = ds.filter(lambda x: len(x["text"]) > 10)
     
     return ds
@@ -30,8 +28,8 @@ def build_mlm_dataloader(tokenizer_name, block_size=128, batch_size=8, mlm_proba
         return tokenizer(examples["text"], truncation=True, max_length=512)
 
     # 2. Apply tokenization
-    # Note: When streaming, we use map() directly. 
-    # We allow the tokenizer to run on variable lengths, then we group them below.
+    # When streaming, we use map()
+    # the tokenizer runs on variable lengths, then we group them
     tokenized_datasets = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
 
     # 3. Grouping function (concatenates texts and chops them into block_size chunks)
@@ -40,7 +38,7 @@ def build_mlm_dataloader(tokenizer_name, block_size=128, batch_size=8, mlm_proba
         concatenated_examples = {k: sum(examples[k], []) for k in examples.keys()}
         total_length = len(concatenated_examples[list(examples.keys())[0]])
         
-        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can customize this part to your needs.
+        # We drop the small remainder
         if total_length >= block_size:
             total_length = (total_length // block_size) * block_size
             
@@ -52,7 +50,6 @@ def build_mlm_dataloader(tokenizer_name, block_size=128, batch_size=8, mlm_proba
         return result
 
     # 4. Apply grouping
-    # Using a large batch size for mapping ensures we have enough tokens to fill blocks
     lm_datasets = tokenized_datasets.map(group_texts, batched=True, batch_size=1000)
 
     # 5. Data Collator (Handles the [MASK]ing automatically)

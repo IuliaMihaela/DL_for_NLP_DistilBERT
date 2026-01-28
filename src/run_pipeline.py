@@ -3,8 +3,7 @@ import subprocess
 import argparse
 from datetime import datetime
 
-# Get the absolute path of the 'src' folder
-# This ensures train.py is found even if you run the script from the project root
+
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def run(cmd, cwd=None):
@@ -20,8 +19,6 @@ def eval_all(model_path: str, out_root: str):
     """
     os.makedirs(out_root, exist_ok=True)
 
-    # Define the mapping of script names to output folders
-    # These paths are relative to the src/ folder
     eval_scripts = [
         ("eval/eval_glue.py", "glue"),
         ("eval/eval_imdb.py", "imdb"),
@@ -30,7 +27,6 @@ def eval_all(model_path: str, out_root: str):
     ]
 
     for script_rel_path, sub_dir in eval_scripts:
-        # Check if the script exists inside src/ before trying to run it
         full_script_path = os.path.join(SRC_DIR, script_rel_path)
         if not os.path.exists(full_script_path):
             print(f"!! Warning: Skipping {script_rel_path} (File not found at {full_script_path})")
@@ -97,7 +93,7 @@ def main():
     root = os.path.join(args.out_root, stamp)
     os.makedirs(root, exist_ok=True)
 
-    # --- Run 3 & 4: Eval Existing Checkpoints (if found) ---
+    # Eval Existing Checkpoints (if found) 
     if os.path.isdir(args.small_ckpt):
         print(f"Found existing small ckpt at {args.small_ckpt}, evaluating...")
         eval_all(args.small_ckpt, os.path.join(root, "EVAL_existing_small"))
@@ -117,7 +113,7 @@ def main():
         subset_size=args.small_subset,
         out_model_dir=os.path.join(root, "CKPT_small"),
         eval_dir=os.path.join(root, "TABLES_small"),
-        data_dir=None, # Small mode generates its own data
+        data_dir=None, 
         epochs=args.epochs,
         batch_size=args.batch_size,
         grad_accum=args.grad_accum,
@@ -128,7 +124,7 @@ def main():
     print("\n=== Starting Run 2: TRAIN PAPER ===")
     
     if args.paper_data_dir is None:
-         print("!! Warning: No --paper_data_dir provided. If train.py requires it, this will crash.")
+         print("!! Warning: No --paper_data_dir provided.")
     
     train_and_eval(
         tag="TRAIN_paper",

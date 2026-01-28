@@ -14,9 +14,6 @@ from dataset import DistillationDataset
 from model import DistilBertStudent
 
 
-# ---------------------------
-# utils
-# ---------------------------
 
 def set_all_seeds(seed: int):
     random.seed(seed)
@@ -102,7 +99,7 @@ def cosine_loss_all_layers(student_hidden_states, teacher_hidden_states, attenti
     for i, s_h in enumerate(student_hidden_states):
         teacher_idx = i * 2
         
-        # Safety check to ensure we don't go out of bounds of the teacher
+        # Ensure we don't go out of bounds of the teacher
         if teacher_idx >= len(teacher_hidden_states):
             break
             
@@ -151,7 +148,7 @@ class TrainCfg:
     save_every_steps: int = 500         # optimizer steps
     log_every_steps: int = 50           # optimizer steps
 
-    dataset_mode: str = "small"         # "small" | "paper"
+    dataset_mode: str = "small"         # "small" or "paper"
     data_dir: str | None = None
     output_dir: str = "checkpoints/final"  # final model dir
 
@@ -162,9 +159,7 @@ def train(cfg: TrainCfg):
 
     set_all_seeds(cfg.seed)
 
-    # ---------------------------
-    # Data
-    # ---------------------------
+   
     ds = DistillationDataset(
         model_name=cfg.teacher_model_name,
         subset_size=cfg.subset_size,
@@ -173,9 +168,7 @@ def train(cfg: TrainCfg):
     )
     loader = ds.get_data_loader(batch_size=cfg.batch_size)
 
-    # ---------------------------
-    # Model
-    # ---------------------------
+
     model = DistilBertStudent(teacher_model_name=cfg.teacher_model_name)
     model.initialize_from_teacher()
     model.to(device)
@@ -183,9 +176,7 @@ def train(cfg: TrainCfg):
     model.teacher.eval()
     model.student.train()
 
-    # ---------------------------
-    # Optimizer
-    # ---------------------------
+
     optimizer = AdamW(
         model.student.parameters(),
         lr=cfg.lr,
@@ -194,18 +185,13 @@ def train(cfg: TrainCfg):
         weight_decay=cfg.weight_decay,
     )
 
-    # ---------------------------
-    # Compute total optimizer steps correctly
-    # ---------------------------
-    # optimizer step happens every grad_accum_steps batches
-    #steps_per_epoch = math.ceil(len(loader) / cfg.grad_accum_steps)
+        # Calculate total training steps
     loader = ds.get_data_loader(batch_size=cfg.batch_size)
     try:
-        # Try getting the exact length (works for small/local datasets)
+        # Try getting the exact length 
         total_batches = len(loader)
     except TypeError:
-        # If streaming (WikiText-103), len() fails. We use an estimate.
-        # WikiText-103 has ~100M tokens. With block_size=128, that's ~781,000 samples.
+        # If streaming (WikiText-103), we use an estimate.
         print("!! Streaming dataset detected (no len()). Using estimated size for progress bar.")
         estimated_samples = 781000 
         total_batches = estimated_samples // cfg.batch_size
@@ -227,15 +213,13 @@ def train(cfg: TrainCfg):
         num_training_steps=total_optim_steps
     )
 
-    # AMP scaler (only meaningful on cuda)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)
+    # AMP scaler
+    scaler = torch.amp.GradScaler(enabled=use_fp16)
 
     os.makedirs(cfg.save_dir, exist_ok=True)
     os.makedirs(cfg.output_dir, exist_ok=True)
 
-    # ---------------------------
     # Train loop
-    # ---------------------------
     raw_step = 0     # batch counter
     optim_step = 0   # optimizer update counter
 
@@ -252,14 +236,14 @@ def train(cfg: TrainCfg):
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
 
-            # Teacher forward (no grad)
+            # Teacher forward 
             teacher_logits, teacher_hid = model.forward_teacher(
                 input_ids=input_ids,
                 attention_mask=attention_mask
             )
 
             # Student forward + losses
-            with torch.cuda.amp.autocast(enabled=use_fp16):
+            with torch.amp.autocast(enabled=use_fp16):
                 mlm_loss, student_logits, student_hid = model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -302,7 +286,7 @@ def train(cfg: TrainCfg):
             # backward
             scaler.scale(loss_scaled).backward()
 
-            # if we reached accumulation boundary, do optimizer step
+            # if accumulation boundary reached, do optimizer step
             if (raw_step % cfg.grad_accum_steps) == 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.student.parameters(), cfg.max_grad_norm)
@@ -347,7 +331,7 @@ def train(cfg: TrainCfg):
             break
 
     # flush leftover grads if epoch ended mid-accumulation
-    # (only if we still have steps left and we accumulated something)
+    # and if still steps left 
     if (raw_step % cfg.grad_accum_steps) != 0 and (cfg.max_steps is None or optim_step < cfg.max_steps):
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.student.parameters(), cfg.max_grad_norm)
@@ -357,7 +341,7 @@ def train(cfg: TrainCfg):
         scheduler.step()
         optim_step += 1
 
-    # final save (USE output_dir, not save_dir/final)
+    # final save
     model.student.save_pretrained(cfg.output_dir)
     ds.tokenizer.save_pretrained(cfg.output_dir)
     print(f"Training done. Final model saved to: {cfg.output_dir}")
@@ -410,7 +394,7 @@ def main():
         data_dir=(args.data_dir if args.data_dir else None),
     )
 
-    # safety: paper mode needs data_dir
+    # paper mode needs data_dir (we can as well not use it)
     if cfg.dataset_mode == "paper" and cfg.data_dir is None:
         raise ValueError("dataset_mode='paper' requires --data_dir")
 
