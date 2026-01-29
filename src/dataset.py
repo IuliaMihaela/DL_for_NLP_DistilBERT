@@ -3,17 +3,14 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 from datasets import load_dataset
 
-# --- CRITICAL IMPORT ---
-# This connects your training loop to the massive streaming data pipeline
 from paper_corpus import build_mlm_dataloader 
-# -----------------------
 
 class DistillationDataset:
     def __init__(
         self,
         model_name: str,
         subset_size: int = 10000,
-        mode: str = "small",          # "small" | "paper"
+        mode: str = "small",          # "small" or "paper"
         data_dir: str | None = None,  # for paper mode caching/loading
         max_length: int = 128,
         mlm_probability: float = 0.15,
@@ -28,8 +25,7 @@ class DistillationDataset:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         # We only preload data here if we are in "small" mode.
-        # If we are in "paper" mode, we delay loading until get_data_loader() is called
-        # to properly handle streaming.
+        # If we are in "paper" mode, we delay loading until get_data_loader() is called to properly handle streaming
         if self.mode == "small":
             self.dataset = self._load_small_dataset()
             # Set format for the manual masking logic below
@@ -39,11 +35,9 @@ class DistillationDataset:
         """
         Returns the appropriate DataLoader based on the mode.
         """
-        # --------------------------------------------------
-        # MODE: PAPER (Delegates to paper_corpus.py)
-        # --------------------------------------------------
+        # MODE: PAPER (paper_corpus.py)
         if self.mode == "paper":
-            # This handles downloading Wikipedia, Streaming, and Collating automatically
+            # This handles downloading Wikipedia, Streaming and Collating automatically
             loader, _ = build_mlm_dataloader(
                 tokenizer_name=self.model_name,
                 block_size=self.max_length,
@@ -53,9 +47,7 @@ class DistillationDataset:
             )
             return loader
 
-        # --------------------------------------------------
         # MODE: SMALL (Local Debugging)
-        # --------------------------------------------------
         return DataLoader(
             self.dataset,
             batch_size=batch_size,
@@ -94,7 +86,7 @@ class DistillationDataset:
         # Create masking matrix
         probability_matrix = torch.full(labels.shape, self.mlm_probability)
         
-        # Mask special tokens (CLS, SEP, PAD) so we don't try to predict them
+        # Mask special tokens (CLS, SEP, PAD) so we don't predict them
         special_tokens_mask = [
             self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True)
             for val in labels.tolist()
@@ -102,7 +94,7 @@ class DistillationDataset:
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), 0.0)
 
         masked_indices = torch.bernoulli(probability_matrix).bool()
-        labels[~masked_indices] = -100  # -100 means "ignore this in loss calculation"
+        labels[~masked_indices] = -100  # ignore this in loss calculation
 
         # 80% of time, replace with [MASK]
         indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices

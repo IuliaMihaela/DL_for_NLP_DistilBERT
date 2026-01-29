@@ -22,6 +22,11 @@ def download_eval_data():
     load_dataset("squad")
     evaluate.load("squad")
 
+    # 4. WikiText-103 (For Paper Training)
+    print("\n>> Downloading WikiText-103 (For Paper Training)...")
+    load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1")
+
+
     print("\n=== All Evaluation Data Downloaded and Cached Successfully! ===")
 
 if __name__ == "__main__":

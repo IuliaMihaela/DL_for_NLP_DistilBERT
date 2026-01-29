@@ -123,17 +123,10 @@ class DistilBertStudent(nn.Module):
         )
         return out.logits, out.hidden_states
 
-    
-        #def forward(self, input_ids, attention_mask=None):
-        #    outputs = self.student(
-        #        input_ids, 
-        #        attention_mask=attention_mask, 
-        #        output_hidden_states=True
-        #    )
-        #    return outputs.logits, outputs.hidden_states
 
     def forward(self, input_ids, attention_mask=None, labels=None):
-        #Student forward pass. If labels are provided, returns MLM loss too.
+        #Student forward pass. 
+        # If labels are provided, returns MLM loss too.
         outputs = self.student(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -141,5 +134,4 @@ class DistilBertStudent(nn.Module):
             output_hidden_states=True,
             return_dict=True
         )
-        # outputs.loss exists when labels is not None
         return outputs.loss, outputs.logits, outputs.hidden_states
