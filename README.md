@@ -3,6 +3,12 @@ https://arxiv.org/abs/1910.01108
 
 # Reproduction
 
+In order to cashe the data (smaller data for debugging and bigger data for the actual training), we first run:
+python download_data.py
+python download_eval_data.py
+
+For training we run the run_pipeline.py script like this:
+python src/run_pipeline.py --epochs 3 --batch_size 8 --paper_subset 0 --paper_data_dir .
 
 # Extension 1: DistilBERT Edge Deployment Reality Check
 
