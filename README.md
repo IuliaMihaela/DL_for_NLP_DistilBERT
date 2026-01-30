@@ -57,7 +57,7 @@ DL_for_NLP_DistilBERT
 │   ├── model.py
 │   ├── paper_corpus.py
 │   ├── run_pipeline.py
-│   ├── train.py
+│   └── train.py
 ├── requirements.txt
 └── README.md
 ```
