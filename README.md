@@ -34,7 +34,15 @@ DL_for_NLP_DistilBERT
 ├── tools/
 │   └── cache_datasets.py
 │
-├── extension1/              
+├── extension1/
+│   ├── data/                     # cached / preprocessed datasets
+│   ├── results/                  # Edge optimization results (metrics and plots)
+│   ├── dataset.py                # dataset loading & preprocessing  (from src/)
+│   ├── model.py                  # DistilBERT model definition (from src/)
+│   ├── train.py                  # training logic  (from src/)
+│   ├── edge_optimizer.py         # Pipeline for edge optimized models & evaluation
+│   └── run_complete_pipeline.py  # End-to-end training and edge deployment pipeline
+│   
 ├── extension2/
 │
 ├── requirements.txt
