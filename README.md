@@ -301,7 +301,6 @@ We export FP32 ONNX first, then apply ONNX Runtime quantization:
 - Quantized PyTorch models are not straightforward to export.
 
 ### Android Edge Benchmark (ONNX Runtime)
-code: https://drive.google.com/drive/folders/1GNy9ZcRREk7myLXbQ97So9-iF3E4_Sjx?usp=sharing
 | Model (ONNX) | Size (MB) | Avg Latency (ms) | p50 (ms) | p90 (ms) |
 |---|---:|---:|---:|---:|
 | distilbert_baseline.onnx | 345.06 | 164.35 | 163.64 | 166.01 |
