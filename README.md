@@ -9,14 +9,57 @@ Goal:
 - reproduce the knowledge distillation setup
 - compare DistilBERT and BERT-base on downstream tasks
 
----
-
 # Structure
 
----
-
+```text
+DL_for_NLP_DistilBERT
+│
+├── src/
+│   ├── data/                 # cached / preprocessed datasets
+│   ├── eval/                 # evaluation scripts
+│   │   ├── eval_glue.py
+│   │   ├── eval_imdb.py
+│   │   ├── eval_squad.py
+│   │   ├── benchmark_speed.py
+│   │   └── utils.py
+│   │
+│   ├── dataset.py            # dataset loading & preprocessing
+│   ├── paper_corpus.py       # WikiText-based distillation corpus
+│   ├── model.py              # DistilBERT model definition
+│   ├── train.py              # training logic
+│   ├── run_pipeline.py       # end-to-end training pipeline
+│   ├── download_data.py      # cache training corpus
+│   └── download_eval_data.py # cache evaluation datasets
+│
+├── tools/
+│   └── cache_datasets.py
+│
+├── extension1/              
+├── extension2/
+│
+├── requirements.txt
+└── README.md
+```
 
 # Reproduction
+
+**Knowledge Distillation (Triple Loss)**
+
+| Loss component | Description |
+|----------------|------------|
+| Distillation loss | Mimicking the Teacher's probability distribution |
+| MLM loss | Predicting masked words correctly |
+| Cosine loss | Alignment of student and teacher hidden representations |
+
+- **Teacher**: BERT-base (12 layers, 768 hidden size)
+- **Student**: DistilBERT (6 layers, 768 hidden size)
+- Frozen Teacher: The Teacher model is loaded in eval mode with gradients disabled
+- Removed Components:Token Type Embeddings, Pooler
+- Embeddings: Copy (Student and Teacher share the same vocabulary)
+- Student initialized from every second layer of the teacher
+- Use WikiText-2 (~2MB), In-Memory, Pre-computed Tokenization
+- Wikipedia articles have random lengths => We concatenate them into a long string and slice them into fixed chunks(128 tokens), eliminating padding waste
+
 
 In order to cashe the data (smaller data for debugging and bigger data for the actual training), we first run:
 ```bash
@@ -42,6 +85,7 @@ Parameters:
 - DistilBERT (student) is initialized from selected BERT layers
 
 - training uses a combination of MLM loss and distillation loss
+
 
 # Evaluation
 
@@ -104,7 +148,7 @@ DistilBERT achieves performance close to BERT-base while using
 
 **Command:**
 ```bash
-python src\eval\eval_squad.py --model bert-base-uncased --seeds 42 --train_bs 2 --eval_bs 2 --epochs 2 --max_train_samples 10000 --max_eval_samples 10000 --cache_dir data\hf_cache
+python src\eval\eval_squad.py --model ./checkpoints_paper_like/seed42 --seeds 42 --train_bs 2 --eval_bs 2 --epochs 2 --max_train_samples 10000 --max_eval_samples 10000 --cache_dir data\hf_cache
 ```
 ### Results
 
