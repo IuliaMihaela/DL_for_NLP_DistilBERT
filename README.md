@@ -1,14 +1,137 @@
 # Reproducibility and Extension Challenge: DistilBERT
+
+This project reproduces and partially extends the results from DistilBERT, a distilled version of BERT 
+Sanh et al., 2019 
+
 https://arxiv.org/abs/1910.01108
+
+Goal:
+- reproduce the knowledge distillation setup
+- compare DistilBERT and BERT-base on downstream tasks
+
+---
+
+# Structure
+
+---
+
 
 # Reproduction
 
 In order to cashe the data (smaller data for debugging and bigger data for the actual training), we first run:
+```bash
 python download_data.py
+```
+```bash
 python download_eval_data.py
-
+```
 For training we run the run_pipeline.py script like this:
+```bash
 python src/run_pipeline.py --epochs 3 --batch_size 8 --paper_subset 0 --paper_data_dir .
+```
+Parameters:
+
+--epochs 3 - number of training epochs
+
+--batch_size 8 - batch size (kept small due to hardware limits)
+
+--paper_subset 0 - use the full available dataset (no paper subset reduction)
+
+--paper_data_dir . - data directory
+
+- DistilBERT (student) is initialized from selected BERT layers
+
+- training uses a combination of MLM loss and distillation loss
+
+# Evaluation
+
+We evaluate the trained models on multiple downstream tasks. Due to limited compute resources, some evaluations
+are performed on reduced subsets of the datasets.
+
+## GLUE (dev)
+
+- **Tasks:** CoLA, MNLI, MRPC, QNLI, QQP, RTE, SST-2, STS-B, WNLI  
+- **Metrics:** Task-specific metrics (accuracy, Matthew’s correlation, Pearson) 
+- **Setup:** Identical hyperparameters for all models, same random seed, each model is fine-tuned separately per GLUE task, max_samples = 1000
+
+**Command:**
+```bash
+python src/eval/eval_glue.py --model ./checkpoints_paper_like/seed42 --cache_dir ./data/hf_cache --seeds 42 --epochs 2 --batch_size 8 --max_samples 1000
+```
+
+### Results (dev sets, parameters above)
+
+| Model       | CoLA  | MNLI  | MRPC  | QNLI  | QQP   | RTE   | SST-2 | STS-B | WNLI  |
+|------------|-------|-------|-------|-------|-------|-------|-------|-------|-------|
+| BERT-base  | 0.4012 | 0.4460 | 0.7574 | 0.6450 | 0.6610 | 0.6101 | 0.8819 | 0.7839 | 0.2958 |
+| DistilBERT | 0.3245 | 0.3480 | 0.6985 | 0.5380 | 0.6620 | 0.5271 | 0.6617 | 0.1045 | 0.5493 |
+
+### Results (Full Dataset, 5 Seeds Median – DistilBERT)
+
+| Model       | CoLA  | MNLI  | MRPC  | QNLI  | QQP   | RTE   | SST-2 | STS-B | WNLI  |
+|------------|-------|-------|-------|-------|-------|-------|-------|-------|-------|
+| DistilBERT | 0.4642 | 0.8145 | 0.8284 | 0.8816 | 0.9001 | 0.5776 | 0.9071 | 0.8550 | 0.5493 |
+
+
+## IMDb
+
+- **Task:** Binary sentiment classification of movie reviews  
+- **Metric:** Accuracy (test set)  
+- **Setup:** Identical hyperparameters for all models, same random seed
+
+**Command:**
+```bash
+python src/eval/eval_imdb.py --model ./checkpoints_paper_like/seed42 --cache_dir ./data/hf_cache --seeds 42 --epochs 2 --batch_size 8
+```
+
+###  Results
+
+| Model       | IMDb Accuracy |
+|------------|---------------|
+| BERT-base  | 0.9214        |
+| DistilBERT | 0.9040        |
+
+DistilBERT achieves performance close to BERT-base while using
+  significantly fewer parameters.
+
+## SQuAD 1.1 (dev)
+
+- **Task:** extractive question answering (predict answer span from context)  
+- **Metric:** exact match (EM), F1 score  
+- **Setup:** identical hyperparameters for all models, same random seed, limited training subset (10k samples)  
+- **Observation:** DistilBERT achieves performance close to BERT-base while using
+  significantly fewer parameters.
+
+**Command:**
+```bash
+python src\eval\eval_squad.py --model bert-base-uncased --seeds 42 --train_bs 2 --eval_bs 2 --epochs 2 --max_train_samples 10000 --max_eval_samples 10000 --cache_dir data\hf_cache
+```
+### Results
+
+| Model      | SQuAD (EM / F1) |
+|------------|----------------|
+| BERT-base  | 72.72 / 81.68  |
+| DistilBERT | 54.81 / 65.70  |
+
+## Inference Speed & Model Size
+
+- **Dataset:** STS-B (GLUE)  
+- **Metric:** end-to-end inference time and parameter numbers for a full dataset pass  
+- **Setup:** batch size = 1, 1000 samples, identical hardware and settings across models
+- **Observation:** DistilBERT achieves performance close to BERT-base while using
+  significantly fewer parameters.
+
+**Command:**
+```bash
+python src/eval/benchmark_speed.py --model ./checkpoints_paper_like/seed42 --cache_dir ./data/hf_cache --warmup 10 --threads 1 --max_samples 1000
+```
+
+### Results
+
+| Model       | Parameters | Inference Time |
+|------------|------------|----------------|
+| BERT-base  | 109M       | 71.24 s        |
+| DistilBERT | 67M        | 34.23 s        |
 
 # Extension 1: DistilBERT Edge Deployment Reality Check
 
