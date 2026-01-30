@@ -357,6 +357,8 @@ python run_complete_pipeline.py --quick-test --output-dir results_quick
 # Extension 2: Attention Map Distillation
 
 Limitation in the original DistilBERT paper -- model considered as black box
+
+
 Student model taught by looking at teacher’s final answers (logits)and final thoughts (hidden states)
 
 Feature based Distillation —> Relation based Distillation
