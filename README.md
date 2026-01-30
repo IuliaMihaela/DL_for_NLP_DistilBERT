@@ -48,6 +48,9 @@ DL_for_NLP_DistilBERT
 ├── requirements.txt
 └── README.md
 ```
+Android Edge Deployment code:  
+https://drive.google.com/drive/folders/1GNy9ZcRREk7myLXbQ97So9-iF3E4_Sjx?usp=sharing  
+- Benchmark pipeline for the Android Environment (Android Studio - Kotlin)
 
 # Reproduction
 
