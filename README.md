@@ -44,7 +44,20 @@ DL_for_NLP_DistilBERT
 │   └── run_complete_pipeline.py  # End-to-end training and edge deployment pipeline
 │   
 ├── extension2/
-│
+│   ├── data/
+│   │   ├── test.txt
+│   │   ├── train.txt
+│   │   └── validation.txt
+│   ├── runs/20260127_1q35646/CKPT_small
+│   │   ├── config.json
+│   │   ├── special_tokens_map.json
+│   │   ├── tokenizer_config.json
+│   │   └── vocab.txt
+│   ├── dataset.py
+│   ├── model.py
+│   ├── paper_corpus.py
+│   ├── run_pipeline.py
+│   ├── train.py
 ├── requirements.txt
 └── README.md
 ```
