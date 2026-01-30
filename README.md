@@ -36,7 +36,7 @@ DL_for_NLP_DistilBERT
 │
 ├── extension1/
 │   ├── data/                     # cached / preprocessed datasets
-│   ├── results/                  # Edge optimization results (metrics and plots)
+│   ├── results/                  # Edge optimization results (metrics, plots and report)
 │   ├── dataset.py                # dataset loading & preprocessing  (from src/)
 │   ├── model.py                  # DistilBERT model definition (from src/)
 │   ├── train.py                  # training logic  (from src/)
