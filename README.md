@@ -82,10 +82,6 @@ Parameters:
 
 --paper_data_dir . - data directory
 
-- DistilBERT (student) is initialized from selected BERT layers
-
-- training uses a combination of MLM loss and distillation loss
-
 
 # Evaluation
 
@@ -176,6 +172,16 @@ python src/eval/benchmark_speed.py --model ./checkpoints_paper_like/seed42 --cac
 |------------|------------|----------------|
 | BERT-base  | 109M       | 71.24 s        |
 | DistilBERT | 67M        | 34.23 s        |
+
+## Conclusion
+
+- On sentence-level classification tasks (IMDB, SST-2, MRPC), DistilBERT preserves most of the teacher model’s performance
+- On more complex reasoning tasks such as SQuAD, the performance gap increases
+- GLUE benchmark results show that although absolute scores are lower than those reported in the original paper, the performance gap between BERT-base and DistilBERT remains not meaningful even when evaluated on reduced subsets.
+- Evaluation on larger training subsets leads to a noticeable improvement in EM and F1 scores for SQuAD
+- DistilBERT uses 40% fewer parameters than BERT-base while achieving around 2× faster inference, demonstrating a strong trade-off between efficiency and accuracy
+
+Overall, the results align with the original DistilBERT paper: knowledge distillation successfully transfers most of the teacher model’s knowledge, but deeper models remain superior for tasks requiring complex reasoning.
 
 # Extension 1: DistilBERT Edge Deployment Reality Check
 
