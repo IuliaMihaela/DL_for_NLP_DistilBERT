@@ -364,7 +364,39 @@ Feature based Distillation —> Relation based Distillation
 ## Research Questions 
 - Can a student model achieve higher performance and better generalization by mimicking the internal relational logic (attention) of the teacher, rather than just its final output?
 
+## Attention Map Distillation Implemented 
+- Preparing masks
+  - reshaping mask 
+  - unsqueezing: calculate loss on real token not padding tokens
 
+- Layer Mapping
+  - student has less layers than teacher 
+  - log-probability conversion (student’s attention score → log-space)
+  - calculating KL Divergence (get loss value for every token relation before mask)
+  - masking & normalization
+ 
+- Return mean KL Divergence across all paired layers and tokens
 
+## Result Summary
+### NaN problem
+- calculation becomes infinite
+- due to exploding gradient (4 different loss: MLM, Distill, Cosine, and Attention)
 
+### Loss Trends (Despite NaNs, the model is learning)
+| Loss Type | Start (Step 50) | End (Step 3700) | Status | 
+|------|----------:|-------:|----------------:|
+| MLM | 4.81 | 1.18 | Excellent gets much better at filling blanks |
+| Distill |  3.95 | 1.16 | mimicks teacher’s output logic |
+| Cos |  0.26 | 0.19 | Slight improvement |
+| Attn | 12.53 | 9.74 | Struggling |
 
+### Failures
+- NaN values which causes the model to crash 
+- no evaluation
+- exploding gradients
+
+## How to Run
+
+```
+python train.py
+```
