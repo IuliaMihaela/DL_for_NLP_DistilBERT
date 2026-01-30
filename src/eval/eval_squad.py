@@ -1,3 +1,4 @@
+# src/eval/eval_squad.py
 import os
 import argparse
 import collections
@@ -14,6 +15,14 @@ from transformers import (
     set_seed,
 )
 from utils import set_all_seeds, save_json, print_table, median
+
+
+def _limit_split(ds_split, max_samples: int | None, seed: int):
+    """Shuffle + take first N (stable per seed)."""
+    if max_samples is None:
+        return ds_split
+    n = min(int(max_samples), len(ds_split))
+    return ds_split.shuffle(seed=seed).select(range(n))
 
 
 def prepare_train_features(examples, tokenizer, max_length=384, doc_stride=128):
@@ -138,7 +147,7 @@ def postprocess_qa_predictions(tokenizer, examples, features, raw_predictions, n
                     start_char = offset_mapping[start_index][0]
                     end_char = offset_mapping[end_index][1]
                     valid_answers.append(
-                        {"score": start_logits[start_index] + end_logits[end_index],
+                        {"score": float(start_logits[start_index] + end_logits[end_index]),
                          "text": context[start_char:end_char]}
                     )
 
@@ -179,8 +188,17 @@ class DistillQATrainer(Trainer):
         s_end = outputs.end_logits / T
         t_end = t_out.end_logits / T
 
-        kl_start = F.kl_div(F.log_softmax(s_start, dim=-1), F.softmax(t_start, dim=-1), reduction="batchmean") * (T*T)
-        kl_end   = F.kl_div(F.log_softmax(s_end,   dim=-1), F.softmax(t_end,   dim=-1), reduction="batchmean") * (T*T)
+        kl_start = F.kl_div(
+            F.log_softmax(s_start, dim=-1),
+            F.softmax(t_start, dim=-1),
+            reduction="batchmean"
+        ) * (T * T)
+
+        kl_end = F.kl_div(
+            F.log_softmax(s_end, dim=-1),
+            F.softmax(t_end, dim=-1),
+            reduction="batchmean"
+        ) * (T * T)
 
         distill = 0.5 * (kl_start + kl_end)
         loss = ce_loss + self.beta * distill
@@ -189,17 +207,29 @@ class DistillQATrainer(Trainer):
 
 
 def run_one(
-    model_name,
-    seed,
-    out_dir,
-    use_distill,
-    teacher_name=None,
-    temperature=2.0,
-    beta=1.0,
-    cache_dir=None,
-    offline=False,
+    model_name: str,
+    seed: int,
+    out_dir: str,
+    use_distill: bool,
+    teacher_name: str | None = None,
+    temperature: float = 2.0,
+    beta: float = 1.0,
+    cache_dir: str | None = None,
+    offline: bool = False,
+    # limits
+    max_train_samples: int | None = None,
+    max_eval_samples: int | None = None,
+    # tokenization params
+    max_length: int = 384,
+    doc_stride: int = 128,
+    # training params
+    lr: float = 3e-5,
+    train_bs: int = 12,
+    eval_bs: int = 12,
+    epochs: float = 2.0,
 ):
-    set_all_seeds(seed); set_seed(seed)
+    set_all_seeds(seed)
+    set_seed(seed)
 
     if offline:
         os.environ["HF_DATASETS_OFFLINE"] = "1"
@@ -207,20 +237,24 @@ def run_one(
 
     ds = load_dataset("squad", cache_dir=cache_dir)
 
+    # Limit BEFORE mapping (this is where speed/memory is won)
+    train_ds = _limit_split(ds["train"], max_train_samples, seed)
+    eval_ds = _limit_split(ds["validation"], max_eval_samples, seed)
+
     tok = AutoTokenizer.from_pretrained(
         model_name, use_fast=True, cache_dir=cache_dir, local_files_only=offline
     )
 
-    train_feats = ds["train"].map(
-        lambda ex: prepare_train_features(ex, tok),
+    train_feats = train_ds.map(
+        lambda ex: prepare_train_features(ex, tok, max_length=max_length, doc_stride=doc_stride),
         batched=True,
-        remove_columns=ds["train"].column_names
+        remove_columns=train_ds.column_names
     )
 
-    val_feats = ds["validation"].map(
-        lambda ex: prepare_validation_features(ex, tok),
+    val_feats = eval_ds.map(
+        lambda ex: prepare_validation_features(ex, tok, max_length=max_length, doc_stride=doc_stride),
         batched=True,
-        remove_columns=ds["validation"].column_names
+        remove_columns=eval_ds.column_names
     )
 
     model = AutoModelForQuestionAnswering.from_pretrained(
@@ -229,10 +263,12 @@ def run_one(
 
     args = TrainingArguments(
         output_dir=os.path.join(out_dir, f"seed{seed}" + ("_D" if use_distill else "")),
-        learning_rate=3e-5,
-        per_device_train_batch_size=12,
-        per_device_eval_batch_size=12,
-        num_train_epochs=2.0,
+        learning_rate=lr,
+        per_device_train_batch_size=train_bs,
+        per_device_eval_batch_size=eval_bs,
+        num_train_epochs=epochs,
+        warmup_ratio=0.1,
+        weight_decay=0.01,
         eval_strategy="no",
         save_strategy="no",
         logging_strategy="no",
@@ -244,14 +280,15 @@ def run_one(
 
     def postprocess_and_compute(p):
         raw = p.predictions
-        preds = postprocess_qa_predictions(tok, ds["validation"], val_feats, raw)
+        preds = postprocess_qa_predictions(tok, eval_ds, val_feats, raw)
         formatted_preds = [{"id": k, "prediction_text": v} for k, v in preds.items()]
-        refs = [{"id": ex["id"], "answers": ex["answers"]} for ex in ds["validation"]]
-        return metric.compute(predictions=formatted_preds, references=refs)
+        refs = [{"id": ex["id"], "answers": ex["answers"]} for ex in eval_ds]
+        out = metric.compute(predictions=formatted_preds, references=refs)
+        return float(out["exact_match"]), float(out["f1"])
 
     if use_distill:
         if teacher_name is None:
-            raise ValueError("teacher_name required for DistilBERT(D)")
+            raise ValueError("teacher_name required when --distill is set")
         teacher = AutoModelForQuestionAnswering.from_pretrained(
             teacher_name, cache_dir=cache_dir, local_files_only=offline
         )
@@ -263,7 +300,6 @@ def run_one(
             args=args,
             train_dataset=train_feats,
             eval_dataset=val_feats,
-            tokenizer=tok,
         )
     else:
         trainer = Trainer(
@@ -271,14 +307,11 @@ def run_one(
             args=args,
             train_dataset=train_feats,
             eval_dataset=val_feats,
-            tokenizer=tok,
         )
 
     trainer.train()
-
     p = trainer.predict(val_feats)
-    m = postprocess_and_compute(p)
-    return float(m["exact_match"]), float(m["f1"])
+    return postprocess_and_compute(p)
 
 
 def main():
@@ -286,10 +319,25 @@ def main():
     ap.add_argument("--model", type=str, required=True)
     ap.add_argument("--out_dir", type=str, default="eval_out/squad")
     ap.add_argument("--seeds", type=str, default="42,43,44,45,46")
+
     ap.add_argument("--distill", action="store_true", help="enable DistilBERT(D) fine-tune distillation")
-    ap.add_argument("--teacher", type=str, default=None, help="BERT QA teacher fine-tuned on SQuAD (for D)")
+    ap.add_argument("--teacher", type=str, default=None, help="QA teacher model (for --distill)")
     ap.add_argument("--temperature", type=float, default=2.0)
     ap.add_argument("--beta", type=float, default=1.0)
+
+    # speed/memory knobs
+    ap.add_argument("--max_train_samples", type=int, default=None, help="limit train examples (before tokenization)")
+    ap.add_argument("--max_eval_samples", type=int, default=None, help="limit eval examples (before tokenization)")
+
+    # tokenization knobs
+    ap.add_argument("--max_length", type=int, default=384)
+    ap.add_argument("--doc_stride", type=int, default=128)
+
+    # training knobs
+    ap.add_argument("--lr", type=float, default=3e-5)
+    ap.add_argument("--train_bs", type=int, default=8)
+    ap.add_argument("--eval_bs", type=int, default=8)
+    ap.add_argument("--epochs", type=float, default=2.0)
 
     ap.add_argument("--cache_dir", type=str, default="data/hf_cache")
     ap.add_argument("--offline", action="store_true", help="use only local HF cache (no downloads)")
@@ -302,8 +350,23 @@ def main():
     runs = []
     for s in seeds:
         em, f1 = run_one(
-            args.model, s, args.out_dir, args.distill, args.teacher, args.temperature, args.beta,
-            cache_dir=args.cache_dir, offline=args.offline
+            model_name=args.model,
+            seed=s,
+            out_dir=args.out_dir,
+            use_distill=args.distill,
+            teacher_name=args.teacher,
+            temperature=args.temperature,
+            beta=args.beta,
+            cache_dir=args.cache_dir,
+            offline=args.offline,
+            max_train_samples=args.max_train_samples,
+            max_eval_samples=args.max_eval_samples,
+            max_length=args.max_length,
+            doc_stride=args.doc_stride,
+            lr=args.lr,
+            train_bs=args.train_bs,
+            eval_bs=args.eval_bs,
+            epochs=args.epochs,
         )
         runs.append((em, f1))
         tag = "D" if args.distill else "base"
@@ -311,8 +374,8 @@ def main():
 
     ems = [x[0] for x in runs]
     f1s = [x[1] for x in runs]
-    em_med = median(ems)
-    f1_med = median(f1s)
+    em_med = float(median(ems))
+    f1_med = float(median(f1s))
 
     save_json(
         {
@@ -322,18 +385,31 @@ def main():
             "seeds": seeds,
             "runs": [{"seed": s, "em": runs[i][0], "f1": runs[i][1]} for i, s in enumerate(seeds)],
             "median": {"em": em_med, "f1": f1_med},
+            "max_train_samples": args.max_train_samples,
+            "max_eval_samples": args.max_eval_samples,
+            "max_length": args.max_length,
+            "doc_stride": args.doc_stride,
+            "lr": args.lr,
+            "train_bs": args.train_bs,
+            "eval_bs": args.eval_bs,
+            "epochs": args.epochs,
             "cache_dir": args.cache_dir,
             "offline": args.offline
         },
         os.path.join(args.out_dir, "squad.json")
     )
 
+    # naming for table
     label = "DistilBERT(D)" if args.distill else "DistilBERT"
+    if args.model == "bert-base-uncased":
+        label = "BERT-base"
+
     print_table(
-        "TABLE 3 (SQuAD v1.1 dev EM/F1)",
-        ["model","EM_median","F1_median","runs"],
-        [[label, f"{em_med:.2f}", f"{f1_med:.2f}", str([(round(a,2), round(b,2)) for a,b in runs])]]
+        "TABLE (SQuAD v1.1 dev EM/F1)",
+        ["model", "EM_median", "F1_median", "runs"],
+        [[label, f"{em_med:.2f}", f"{f1_med:.2f}", str([(round(a, 2), round(b, 2)) for a, b in runs])]]
     )
+
 
 if __name__ == "__main__":
     main()
